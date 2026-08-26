@@ -1,0 +1,28 @@
+# Generated CMake build trees
+**/build/
+**/build-*/
+**/negative-build/
+**/CMakeFiles/
+**/CMakeCache.txt
+**/cmake_install.cmake
+**/CTestTestfile.cmake
+**/Makefile
+
+# Keep the final course PDF from the root LaTeX build.
+!/build/
+!/build/c++.pdf
+
+# LaTeX auxiliary files
+*.aux
+*.fdb_latexmk
+*.fls
+*.log
+*.out
+*.synctex.gz
+*.toc
+*.xdv
+
+# Editor / OS noise
+.DS_Store
+*~
+*.swp

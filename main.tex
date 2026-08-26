@@ -1,0 +1,106 @@
+\documentclass[12pt,a4paper]{article}
+
+\input{preamble}
+
+\begin{document}
+
+% ============================================================
+% Обложка: vox.png на весь первый лист
+% ============================================================
+\thispagestyle{empty}
+
+\IfFileExists{vox.png}{%
+    \AddToShipoutPictureBG*{%
+        \AtPageLowerLeft{%
+            \includegraphics[width=\paperwidth,height=\paperheight]{vox.png}%
+        }%
+    }%
+    \null
+}{%
+    \begin{center}
+        \vspace*{\fill}
+        {\Huge\bfseries Vox}\par
+        \vspace{0.7cm}
+        {\large Файл \texttt{vox.png} пока не найден.}\par
+        \vspace*{\fill}
+    \end{center}
+}
+
+\clearpage
+
+% ============================================================
+% Титульный лист
+% ============================================================
+\thispagestyle{empty}
+
+\begin{center}
+    {\large Московский физико-технический институт}\par
+    \vspace{0.25cm}
+    {\large Физтех-школа прикладной математики и информатики}\par
+
+    \vfill
+
+    {\Huge\bfseries Технологии программирования}\par
+    \vspace{0.45cm}
+    {\LARGE\bfseries и язык C++}\par
+
+    \vspace{1.2cm}
+
+    {\large Подробный конспект курса}\par
+    \vspace{0.25cm}
+    {\large C++17 с отдельными элементами C++20}\par
+
+    \vfill
+
+    \begin{tabular}{rl}
+        Авторы: & Хомченко Илья \\
+                & Шелегеда Наталья
+    \end{tabular}
+
+    \vfill
+
+    {\large Москва, 2026}\par
+\end{center}
+
+\clearpage
+
+% ============================================================
+% Оглавление
+% ============================================================
+\tableofcontents
+\clearpage
+
+% ============================================================
+% Все 15 завершённых лекций подключены ниже.
+% ============================================================
+
+\section*{О конспекте}
+\addcontentsline{toc}{section}{О конспекте}
+
+Этот конспект посвящён технологиям программирования и языку C++.
+Основной стандарт курса --- C++17; заключительный блок отдельно показывает,
+что меняют ключевые возможности C++20 и как они продолжают уже изученную модель языка.
+
+Материал организован в 15 последовательных лекционных блоков с практическими
+экспериментами. Код, сборка, работа компилятора, модель памяти, инструменты
+разработки и производительность рассматриваются вместе, а не как независимые темы.
+
+
+% Подключённые готовые лекции.
+\input{lectures/01_intro_and_first_program}
+\input{lectures/02_declarations_flow_and_errors}
+\input{lectures/03_pointers_memory_and_arrays}
+\input{lectures/04_functions_references_and_const}
+\input{lectures/05_classes_and_encapsulation}
+\input{lectures/06_constructors_destructors_and_copy}
+\input{lectures/07_inheritance_and_polymorphism}
+\input{lectures/08_design_solid_and_patterns}
+\input{lectures/09_templates}
+\input{lectures/10_exceptions_and_raii}
+\input{lectures/11_smart_pointers}
+\input{lectures/12_move_semantics_and_casts}
+\input{lectures/13_type_deduction_lambdas_and_function}
+\input{lectures/14_stl_containers_iterators_algorithms}
+\input{lectures/15_modern_cpp_and_next_steps}
+
+\end{document}

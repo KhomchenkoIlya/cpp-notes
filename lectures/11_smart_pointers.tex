@@ -1,0 +1,560 @@
+% BLOCK11_STAGE2_MANAGED
+% Lecture 11: smart pointers and ownership-aware APIs
+\section{Лекция 11. Умные указатели и владение}
+\label{sec:lecture-11}
+
+В предыдущих лекциях мы уже встречали raw pointers, lifetime, RAII и
+полиморфные interfaces. Остался центральный design-вопрос: \emph{кто отвечает
+за уничтожение объекта?} Сам тип \texttt{T*} на этот вопрос не отвечает.
+Указатель может быть лишь временным способом обратиться к уже существующему
+object, а может случайно оказаться единственным адресом dynamically allocated
+resource. Во втором случае ошибка ownership быстро превращается в leak,
+double delete или dangling pointer.
+
+\begin{importantbox}[Причинная линия]
+Raw pointer не кодирует владение $\rightarrow$ ownership нужно выразить в API
+$\rightarrow$ \texttt{unique\_ptr} задаёт одного owner $\rightarrow$
+\texttt{shared\_ptr} задаёт совместное владение $\rightarrow$
+\texttt{weak\_ptr} наблюдает shared object, не продлевая его lifetime.
+\end{importantbox}
+
+Главная цель smart pointers --- не «автоматически сделать любой pointer
+безопасным». Они делают \term{ownership} явной частью типа и используют RAII:
+когда owning smart pointer заканчивает lifetime, он выполняет соответствующий
+release. При этом обычные references и raw pointers остаются полезными для
+\emph{non-owning access}.
+
+\subsection{Сначала словарь: object, access, ownership}
+
+Разделим три понятия.
+
+\term{Object} имеет lifetime. Пока lifetime не начался или уже закончился,
+обращаться к нему как к живому object нельзя.
+
+\term{Access} означает возможность обратиться к object. Reference
+\texttt{T\&}, \texttt{const T\&} или raw pointer \texttt{T*} могут предоставлять
+такой доступ, ничего не говоря об обязанности уничтожить object.
+
+\term{Ownership} --- ответственность за окончание lifetime ресурса в нужный
+момент. Для dynamically allocated object это обычно означает, что некоторый
+owner обязан обеспечить ровно один корректный release.
+
+\begin{whybox}[Почему raw pointer недостаточен как ownership contract?]
+По declaration \texttt{Widget* p} caller не видит, должен ли он вызвать
+\texttt{delete p}, запрещено ли это, может ли \texttt{p} быть null и кто должен
+жить дольше кого. Эти сведения приходится хранить в комментариях и соглашениях.
+Smart pointer переносит важную часть этого contract в type system.
+\end{whybox}
+
+В современном интерфейсе полезна следующая исходная эвристика:
+\texttt{T\&}/\texttt{const T\&}: объект обязан существовать; функция его не владеет; \texttt{T*}: non-owning access, если допустимо отсутствие объекта или pointer semantics действительно удобна; \texttt{std::unique\_ptr<T>}: один owner; \texttt{std::shared\_ptr<T>}: несколько owners действительно должны совместно продлевать lifetime; \texttt{std::weak\_ptr<T>}: наблюдение за объектом, которым владеют \texttt{shared\_ptr}, без продления lifetime.
+
+Это design guideline, а не правило синтаксиса стандарта. Legacy API может
+использовать raw owning pointers, но такой contract труднее читать и проверять.
+
+\subsection{Проблема naked \texttt{new}/\texttt{delete}}
+
+Учебный код легко написать так:
+
+\begin{cppcode}
+Product* make_product() {
+    return new Product{/*...*/};
+}
+
+void command() {
+    Product* product = make_product();
+    use(*product);               // а если здесь throw?
+    delete product;
+}
+\end{cppcode}
+
+Здесь ownership существует только в голове программиста. Early return,
+exception или новый путь control flow легко пропускает \texttt{delete}.
+Передача \texttt{product} другой функции также не отвечает на вопрос,
+передаётся ли ownership.
+
+RAII-идея из лекции~\ref{sec:lecture-10}: ответственность за release нужно
+поместить в destructor объекта-owner. Standard library уже предоставляет такие
+owners.
+
+\subsection{\texttt{std::unique\_ptr}: один владелец}
+
+\texttt{std::unique\_ptr<T>} находится в \headerfile{memory}. Он владеет
+одним object (или пуст) и при уничтожении owner освобождает принадлежащий ему
+object подходящим deleter.
+
+\begin{cppcode}
+#include <memory>
+
+auto product = std::make_unique<Product>();
+product->run();
+\end{cppcode}
+
+\texttt{std::make\_unique<T>(args...)} создаёт \texttt{T} и возвращает
+\texttt{unique\_ptr<T>}. В C++14 и новее это обычный предпочтительный способ
+получить unique ownership: raw owning \texttt{new} не оказывается между
+несколькими выражениями user code.
+
+\begin{standardbox}[Что гарантируется семантически]
+\texttt{unique\_ptr} movable, но не copyable owner. Два независимых
+\texttt{unique\_ptr} не могут обычным копированием начать владеть одним и тем же
+object. Это важная часть ownership contract.
+\end{standardbox}
+
+Попытка:
+
+\begin{cppcode}
+auto first = std::make_unique<int>(42);
+auto second = first; // compile error: copy запрещена
+\end{cppcode}
+
+проверяется настоящим negative compile test в эксперименте.
+
+\subsection{Доступ через \texttt{unique\_ptr}}
+
+Owner ведёт себя pointer-like:
+\texttt{*owner} --- object; \texttt{owner->member()} --- member access; \texttt{owner.get()} --- raw pointer без передачи ownership; \texttt{if (owner)} --- проверка, есть ли owned object; \texttt{owner.reset()} --- заменить/освободить owned object; \texttt{owner.release()} --- отдать raw pointer и отказаться от владения.
+
+\begin{warningbox}[Осторожно с \texttt{release()}]
+После \texttt{release()} smart pointer уже не отвечает за cleanup. Caller снова
+получает manual ownership problem. Это низкоуровневая операция для interop и
+специальных contracts, а не обычный способ «достать pointer».
+Для временного non-owning access нужен \texttt{get()}.
+\end{warningbox}
+
+\subsection{Передача unique ownership}
+
+Ownership можно передать другому owner. Для уже существующей named variable
+обычно нужна операция \texttt{std::move}:
+
+\begin{cppcode}
+void consume(std::unique_ptr<Job> job);
+
+auto job = std::make_unique<Job>();
+consume(std::move(job));
+
+if (!job) {
+    // ownership ушло в consume
+}
+\end{cppcode}
+
+Здесь \texttt{std::move} используется только как минимальный bridge: он
+разрешает выбрать move operation у movable type. Полная модель lvalue/rvalue,
+value categories и то, что именно делает \texttt{std::move}, --- тема следующего
+блока. Сейчас достаточно увидеть ownership contract: после передачи old owner
+больше не владеет объектом.
+
+Функция, которая \emph{принимает ownership}, может принимать
+\texttt{std::unique\_ptr<T>} by value. Функция, которая только использует объект,
+обычно не должна требовать unique pointer:
+
+\begin{cppcode}
+void print_product(const Product& product); // borrow
+void maybe_print(const Product* product);   // nullable borrow
+\end{cppcode}
+
+Так caller не обязан менять способ владения только ради обычного чтения.
+
+\subsection{Возврат ownership из factory}
+
+В блоке 08 Factory Method специально обходился без smart pointers: creator
+хранил concrete product внутри себя и возвращал non-owning reference. Теперь
+мы можем выразить другой contract: factory создаёт новый polymorphic object и
+\emph{передаёт caller единственное владение}.
+
+\begin{cppcode}
+class Product {
+public:
+    virtual ~Product() = default;
+    virtual std::string format() const = 0;
+};
+
+class Creator {
+public:
+    virtual ~Creator() = default;
+    std::unique_ptr<Product> create() const {
+        return make_product();
+    }
+
+protected:
+    virtual std::unique_ptr<Product> make_product() const = 0;
+};
+\end{cppcode}
+
+Concrete creator возвращает, например,
+\texttt{std::make\_unique<TextProduct>()}. Преобразование
+\texttt{unique\_ptr<Derived>} в совместимый \texttt{unique\_ptr<Base>}
+поддерживает polymorphic ownership.
+
+Virtual destructor base здесь снова принципиален. В итоге unique owner хранит
+\texttt{Product*}, но уничтожить нужно полный dynamic object.
+
+\begin{whybox}[Почему factory return type полезен]
+Return type \texttt{std::unique\_ptr<Product>} сразу сообщает caller:
+«ты получаешь новый object и теперь отвечаешь за его lifetime, но cleanup
+автоматический». Return \texttt{Product*} этого не выражал бы.
+\end{whybox}
+
+\subsection{Rule of Zero возвращается}
+
+Если class хранит resource через \texttt{unique\_ptr} или standard containers,
+ему часто не требуется manual destructor. Это продолжает Rule of Zero из
+лекции~\ref{sec:lecture-06}: resource-managing member сам выполняет cleanup.
+
+Но есть важное следствие. Class с \texttt{unique\_ptr} member обычно сам
+становится non-copyable, потому что unique ownership нельзя копировать
+автоматически. Позже move semantics позволит таким объектам передавать
+ownership как значение.
+
+\subsection{Массивы и unique ownership}
+
+Существует специализация \texttt{std::unique\_ptr<T[]>} для dynamically allocated
+arrays, и \texttt{std::make\_unique<T[]>(n)} умеет её создавать.
+
+Для обычной динамической последовательности чаще удобен
+\texttt{std::vector<T>}. Он хранит size, поддерживает iteration и value semantics.
+\texttt{unique\_ptr<T[]>} полезен, когда задача действительно требует
+низкоуровневого owning array buffer.
+
+Smart pointer не заменяет container abstraction.
+
+\subsection{\texttt{std::shared\_ptr}: совместное владение}
+
+Иногда одного owner недостаточно по смыслу. Представим audit session, которая
+должна оставаться живой, пока ею независимо пользуются console view и statistics
+view. Ни один из них не подходит на роль единственного owner.
+
+\begin{cppcode}
+auto session = std::make_shared<AuditSession>("block-11");
+
+ConsoleView console{session};
+StatisticsView stats{session};
+session.reset(); // views всё ещё совместно владеют session
+\end{cppcode}
+
+Копирование \texttt{shared\_ptr} создаёт ещё одного owner того же object.
+Object уничтожается, когда исчезает последний owning \texttt{shared\_ptr}.
+
+\begin{implementationbox}[Обычная реализация]
+Обычно существует control block со счётчиками strong/weak references и
+информацией, необходимой для destruction. \texttt{shared\_ptr} обращается к нему
+при copy/destruction. Standard определяет observable semantics, но не требует
+конкретного layout control block или конкретной ABI-структуры.
+\end{implementationbox}
+
+\texttt{std::make\_shared<T>} обычно предпочтительнее отдельного
+\texttt{shared\_ptr<T>} с ручным \texttt{new T(...)}:
+код проще, exception-safe, а обычная
+implementation может объединить allocation object и control block. Последнее
+--- optimization possibility, а не переносимая гарантия числа allocations для
+всех реализаций.
+
+\subsection{\texttt{use\_count()} не проектирует ownership}
+
+\texttt{shared\_ptr::use\_count()} показывает число owning references в момент
+наблюдения и полезен в учебных diagnostics. Но application logic не должна
+обычно строиться на предположении «если count равен 1, то...»: между потоками и
+изменениями owners это хрупкое знание, а сам count не объясняет правильную
+модель владения.
+
+Сначала проектируют, \emph{почему owners несколько}; затем выбирают
+\texttt{shared\_ptr}.
+
+\subsection{Цена shared ownership}
+
+Shared ownership удобнее, но не бесплатно:
+control block занимает память; copy/reset owners изменяют reference count; typical thread-safe reference-count updates могут требовать atomic operations; lifetime становится менее локально очевидным; циклы strong ownership не разрываются автоматически.
+
+Поэтому policy проекта остаётся простой: если естественный owner один,
+предпочитаем \texttt{unique\_ptr}. \texttt{shared\_ptr} появляется только при
+реальном shared lifetime requirement.
+
+\subsection{Цикл \texttt{shared\_ptr}}
+
+Рассмотрим два objects, каждый из которых владеет другим:
+
+\begin{cppcode}
+struct Node {
+    std::shared_ptr<Node> peer;
+};
+
+auto a = std::make_shared<Node>();
+auto b = std::make_shared<Node>();
+a->peer = b;
+b->peer = a;
+\end{cppcode}
+
+После уничтожения local owners \texttt{a} и \texttt{b} каждый Node всё ещё
+имеет одного strong owner: соседний Node. Reference counts не становятся нулём,
+destructors не вызываются, возникает resource leak.
+
+Это не dangling-pointer UB. Наоборот, objects остаются логически «живыми»
+из-за неправильной ownership graph.
+
+\subsection{\texttt{std::weak\_ptr}: наблюдение без владения}
+
+\texttt{std::weak\_ptr<T>} связан с object, которым владеют
+\texttt{shared\_ptr}, но сам не увеличивает strong owner count.
+
+Он нужен для non-owning edges в shared graph:
+parent link в tree, где parent владеет children; cache observation; subscriber, который не должен продлевать lifetime publisher; back-reference, разрывающий ownership cycle.
+
+У \texttt{weak\_ptr} нет обычного \texttt{operator->}: сначала нужно временно
+получить owning \texttt{shared\_ptr} через \texttt{lock()}.
+
+\begin{cppcode}
+std::weak_ptr<Session> observed = session;
+
+if (auto alive = observed.lock()) {
+    alive->print();
+} else {
+    // object уже уничтожен
+}
+\end{cppcode}
+
+\texttt{lock()} атомарно относительно shared ownership semantics получает
+\texttt{shared\_ptr}, если object ещё существует, либо пустой
+\texttt{shared\_ptr}. \texttt{expired()} сообщает, что owning object уже исчез,
+но для непосредственного использования всё равно удобнее проверять result
+\texttt{lock()}.
+
+\subsection{Правильное направление ownership graph}
+
+Для tree естественная модель:
+
+\begin{cppcode}
+class Node {
+    std::vector<std::shared_ptr<Node>> children_; // owning edges
+    std::weak_ptr<Node> parent_;                  // non-owning back edge
+};
+\end{cppcode}
+
+Это не означает, что любой tree обязан использовать \texttt{shared\_ptr}.
+Если весь tree имеет одного owner, \texttt{unique\_ptr} для children может быть
+лучше. Пример показывает именно принцип: ownership direction должен следовать
+lifetime responsibility, а обратная навигация не обязана владеть.
+
+\subsection{Raw pointer после smart pointer остаётся нормальным}
+
+Smart pointers не отменяют raw pointers. Ошибка --- считать любой
+\texttt{T*} owning pointer без ясного contract.
+
+\begin{cppcode}
+void inspect(const Product& product);
+
+auto owner = std::make_unique<TextProduct>();
+inspect(*owner);              // borrow через reference
+
+const Product* view = owner.get(); // non-owning pointer
+if (view != nullptr) {
+    inspect(*view);
+}
+\end{cppcode}
+
+\texttt{view} не должен пережить \texttt{owner}. Smart pointer гарантирует
+cleanup owned object, но не может автоматически сделать безопасными все
+заимствованные pointers/references.
+
+\begin{warningbox}[Smart pointer не лечит dangling borrow]
+Если сохранить \texttt{owner.get()}, затем уничтожить owner и после этого
+разыменовать raw pointer, получится прежняя lifetime error. Ownership стало
+явнее, но lifetime non-owning views всё ещё нужно соблюдать.
+\end{warningbox}
+
+\subsection{Как читать parameter types}
+
+Практическая таблица API:
+
+\begin{center}
+\begin{tabularx}{\textwidth}{L{0.28\textwidth}YY}
+\toprule
+Parameter & Обычно означает & Вопрос caller \\
+\midrule
+\texttt{const T\&} & read-only borrow & object точно существует? \\
+\texttt{T\&} & mutable borrow & mutation разрешена? \\
+\texttt{const T*}/\texttt{T*} & nullable/non-owning view & возможен null? \\
+\texttt{unique\_ptr<T>} by value & transfer unique ownership & готов отдать owner? \\
+\texttt{const unique\_ptr<T>\&} & обычно слишком привязанный API & почему нужен именно owner type? \\
+\texttt{shared\_ptr<T>} by value & функция становится co-owner & shared lifetime действительно нужен? \\
+\texttt{const shared\_ptr<T>\&} & доступ к handle без нового owner & нужен именно handle contract? \\
+\texttt{weak\_ptr<T>} & non-owning shared observation & object может исчезнуть? \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+Нет запрета принимать smart pointer by reference. Но если функция лишь вызывает
+методы \texttt{T}, parameter \texttt{T\&}/\texttt{const T\&} обычно слабее
+связывает API с конкретной ownership strategy.
+
+\subsection{Return types и ownership}
+
+Return type особенно хорошо выражает создание:
+\texttt{T} --- вернуть самостоятельное value; \texttt{unique\_ptr<T>} --- вернуть единственного owner polymorphic/dynamic object; \texttt{shared\_ptr<T>} --- вернуть shareable owner, если API действительно обещает shared lifetime; \texttt{T*}/\texttt{T\&} --- обычно вернуть non-owning view на object, lifetime которого обеспечивается где-то ещё.
+
+Возвращать \texttt{shared\_ptr} «на всякий случай» плохо: caller уже не может
+понять, почему ownership должна быть shared, а code получает лишний control
+block/reference-counting contract.
+
+\subsection{Exception safety и smart pointers}
+
+Smart pointers являются RAII owners, поэтому хорошо сочетаются с exceptions.
+
+\begin{cppcode}
+auto item = std::make_unique<Item>();
+prepare(*item);       // may throw
+store(std::move(item));
+\end{cppcode}
+
+Если \texttt{prepare} бросает до transfer, local unique owner уничтожится при
+stack unwinding и освободит Item. Manual \texttt{delete} branch не нужен.
+
+\texttt{make\_unique}/\texttt{make\_shared} также уменьшают число мест, где
+raw resource временно существует без owner.
+
+\subsection{Ошибочные способы создать несколько owners}
+
+Нельзя создавать два независимых smart owners из одного raw owning pointer:
+
+\begin{cppcode}
+Widget* raw = new Widget;
+std::shared_ptr<Widget> a{raw};
+std::shared_ptr<Widget> b{raw}; // два разных control blocks: опасно
+\end{cppcode}
+
+Это не «два shared owners», а два независимых ownership systems, каждый считает,
+что обязан уничтожить один object. Итог способен привести к double delete.
+
+Правильный shared owner копируют:
+
+\begin{cppcode}
+auto a = std::make_shared<Widget>();
+auto b = a; // один shared ownership group
+\end{cppcode}
+
+А unique owner вообще не копируют.
+
+\subsection{Нужно ли всегда хранить \texttt{shared\_ptr} в members?}
+
+Нет. Member type должен выражать responsibility конкретного class.
+Если class обязан продлевать lifetime collaborator, shared owner оправдан.
+Если collaborator гарантированно живёт снаружи дольше class, reference/raw
+non-owning pointer может быть точнее.
+
+Но такой borrow contract должен быть простым и доказуемым. Smart pointers не
+заменяют design lifetime graph.
+
+\subsection{Custom deleter: зачем существует}
+
+Иногда resource освобождается не через обычный \texttt{delete}: C API может
+требовать \texttt{fclose}, OS API --- специальную release function.
+\texttt{unique\_ptr} и \texttt{shared\_ptr} поддерживают custom deleters.
+
+В этой лекции мы не строим большой wrapper вокруг C resource: RAII-механизм уже
+был изучен в блоке 10. Важно только увидеть общую идею: smart pointer --- это
+policy-owning RAII handle, и способ destruction может быть частью его type/state.
+
+\subsection{Потокобезопасность: аккуратная граница обещаний}
+
+Shared ownership имеет thread-safety guarantees для операций над разными
+\texttt{shared\_ptr} objects, относящимися к одному control block, но это не
+делает сам \texttt{T} thread-safe. Два threads, меняющие один \texttt{T} через
+shared owners без собственной synchronization, всё ещё могут создать data race.
+
+Полную concurrency theory здесь не вводим.
+
+\subsection{Стоимость: что именно мы покупаем}
+
+\texttt{unique\_ptr} обычно проектируется как очень лёгкий owner: для обычного
+deleter обычная implementation хранит один pointer, а destruction сводится к
+проверке/удалению. Но стандарт не обещает универсально
+\texttt{sizeof(unique\_ptr<T>) == sizeof(T*)}: custom deleter и implementation
+могут менять representation.
+
+\texttt{shared\_ptr} обычно дороже:
+pointer/handle state; control block; reference-count updates; дополнительная indirection; более сложный lifetime.
+
+Это цена именно shared ownership, а не причина избегать его там, где несколько
+owners необходимы.
+
+\begin{performancebox}[Не измеряем бессмысленный microbenchmark]
+Главный выбор здесь семантический: один owner или несколько. Если ownership
+model неверна, выигрыш в несколько наносекунд не исправляет design. Benchmark
+уместен только после выбора корректной модели и при доказанном hot path.
+Поэтому в блоке \texttt{BENCHMARKS=N/A}.
+\end{performancebox}
+
+\subsection{Эксперимент 1: ownership\_factory\_lab}
+
+Каталог:
+\filepath{examples/11\_smart\_pointers/01\_ownership\_factory\_lab}.
+
+Эксперимент возвращается к Factory Method из блока 08, но теперь factory
+создаёт новый polymorphic Product и возвращает
+\texttt{std::unique\_ptr<Product>}.
+
+Проверяются четыре идеи:
+1) concrete creators возвращают unique ownership через base interface; 2) virtual destructor уничтожает полный dynamic object; 3) ownership можно передать через \texttt{std::move}, после чего old owner пуст; 4) helper, который лишь читает Product, принимает reference/raw non-owning view, а не smart pointer.
+
+Отдельный \filepath{copy\_unique\_fail.cpp} действительно не компилируется:
+копирование \texttt{unique\_ptr} запрещено.
+
+\begin{shellcode}
+cd examples/11_smart_pointers/01_ownership_factory_lab
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug
+cmake --build build
+ctest --test-dir build --output-on-failure
+./run_checks.sh
+\end{shellcode}
+
+PASS означает, что все runtime cases успешны, negative compile действительно
+отклонён compiler, а ownership/destructor trace совпадает с contract.
+
+\subsection{Эксперимент 2: shared\_weak\_graph\_lab}
+
+Каталог:
+\filepath{examples/11\_smart\_pointers/02\_shared\_weak\_graph\_lab}.
+
+Здесь есть три разных lifetime graph:
+1) несколько independent views совместно владеют одним AuditSession; 2) два strong back-links создают цикл, и после внешнего scope destructor count остаётся нулевым; 3) tree хранит children через \texttt{shared\_ptr}, а parent back-link через \texttt{weak\_ptr}; цикл исчезает, destructors вызываются.
+
+Также проверяется \texttt{weak\_ptr::lock}: пока strong owner существует,
+\texttt{lock()} успешен; после его уничтожения weak observer сообщает expiration.
+
+\begin{shellcode}
+cd examples/11_smart_pointers/02_shared_weak_graph_lab
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug
+cmake --build build
+ctest --test-dir build --output-on-failure
+./build/shared_weak_graph_lab
+\end{shellcode}
+
+Shared-cycle case намеренно демонстрирует logical leak в отдельном process.
+Он не используется как production design и не UB. Исправленный weak
+graph завершается нормальным destruction trace.
+
+\subsection{Сводка выбора}
+
+\begin{center}
+\begin{tabularx}{\textwidth}{L{0.23\textwidth}YYY}
+\toprule
+Ситуация & Инструмент & Что владеет & Главный риск \\
+\midrule
+Один owner & \texttt{unique\_ptr} & один handle & premature transfer \\
+Несколько owners & \texttt{shared\_ptr} & ownership group & cycles/overuse \\
+Наблюдение shared object & \texttt{weak\_ptr} & никто дополнительно & object может исчезнуть \\
+Короткий обязательный borrow & \texttt{T\&} & никто & owner должен жить дольше \\
+Nullable borrow & \texttt{T*} & никто & null/dangling \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\begin{importantbox}[Главный вывод]
+Smart pointer выбирают не по правилу «raw pointer плохой», а по вопросу
+ownership. Unique ownership --- default для dynamically owned object.
+Shared ownership требует реального основания. Borrowing API обычно выражается
+references/raw pointers и не должен случайно продлевать lifetime.
+\end{importantbox}
+
+Следующий блок объяснит move semantics и value categories. Тогда станет понятно,
+почему \texttt{unique\_ptr} можно передавать, но нельзя копировать, и что именно
+означает уже использованный здесь \texttt{std::move}.

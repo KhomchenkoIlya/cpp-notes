@@ -1,0 +1,442 @@
+% Lecture 05: Классы и инкапсуляция
+
+\section{Лекция 5. Классы и инкапсуляция}
+\label{sec:lecture-05}
+
+В блоке~4 большой \texttt{main} утилиты инвентаризации был разделён на
+функции. Но строка отчёта всё ещё представлена \texttt{BlockInfo} с открытыми
+полями. Имя, пути и результаты проверок постоянно путешествуют вместе. Caller
+может записать \texttt{lecture\_exists=true}, оставить нулевое число строк или
+связать имя одного блока с путём другого. Типы полей корректны, состояние в
+целом --- нет.
+
+\begin{importantbox}[Главный вопрос]
+Как создать тип предметной области, который хранит связанные данные рядом,
+предлагает только осмысленные операции и сокращает число мест, где можно
+нарушить согласованность?
+\end{importantbox}
+
+\subsection{Зачем программе собственный тип}
+
+В языке уже есть \texttt{int}, \texttt{bool} и pointer. Библиотека даёт
+строки, контейнеры и пути: \texttt{std::string}, \texttt{std::vector},
+\texttt{std::filesystem::path}. Но задача говорит не о случайном числе и
+строке, а о \emph{блоке курса}. Набор переменных плохо выражает сущность:
+
+\begin{cppcode}
+int number{5};
+std::string slug{"classes_and_encapsulation"};
+bool lecture_exists{true};
+bool examples_exist{true};
+\end{cppcode}
+
+Если параметры почти всегда передаются вместе, это сигнал проверить, не
+являются ли они одним понятием. Не всякая длинная parameter list требует
+класса, но повторяющаяся группа данных и операций часто обнаруживает
+потерянный тип. Класс позволяет создать новый пользовательский тип, соединяя
+состояние с операциями над ним.
+
+\begin{definition}
+\textbf{Class} задаёт пользовательский тип. \textbf{Object}, или
+\textbf{instance}, --- конкретный объект этого типа со своим состоянием и
+lifetime. Class --- описание; \texttt{first} и \texttt{second} ниже --- два
+разных объекта.
+\end{definition}
+
+\begin{cppcode}
+struct BlockLabel {
+    int number;
+    std::string slug;
+};
+
+BlockLabel first{4, "functions_references_and_const"};
+BlockLabel second{5, "classes_and_encapsulation"};
+\end{cppcode}
+
+\texttt{number} и \texttt{slug} --- data members, то есть объекты, являющиеся
+частями каждого \texttt{BlockLabel}. У двух instances свои members. Точка
+выбирает member конкретного объекта. Поэтому \texttt{first.number} не
+обращается к состоянию \texttt{second}.
+
+\subsection{Struct и class: языковое различие}
+
+Обе формы могут содержать данные и функции:
+
+\begin{cppcode}
+struct PublicLabel {
+    int number; // public по умолчанию
+    std::string slug;
+    bool valid() const { return number >= 1 && number <= 15; }
+};
+
+class HiddenLabel {
+    int number_; // private по умолчанию
+    std::string slug_;
+};
+\end{cppcode}
+
+Ключевое различие здесь --- default access: members \texttt{struct} по
+умолчанию \texttt{public}, members \texttt{class} --- \texttt{private}.
+Обе формы способны иметь data members, member functions и access sections.
+Миф «struct только для данных, class только для поведения» не правило C++.
+
+Практическая эвристика: \texttt{struct} удобен для простой агрегатоподобной
+записи с намеренно открытым представлением; \texttt{class} --- когда нужно
+скрыть representation или защищать invariant. Это style guideline, не
+ограничение языка.
+
+\subsection{Member function и текущий объект}
+
+Функция внутри определения класса называется member function (часто method):
+
+\begin{cppcode}
+class Progress {
+public:
+    bool is_complete() const {
+        return lecture_exists_ && examples_exist_;
+    }
+
+private:
+    bool lecture_exists_{};
+    bool examples_exist_{};
+};
+\end{cppcode}
+
+Call \texttt{first.is\_complete()} выбирает method через \texttt{.}. Он
+работает с состоянием именно \texttt{first}. Интуитивная модель: у non-static
+member function есть неявный object parameter. Внутри неё \texttt{this} ---
+pointer на текущий объект; поэтому \texttt{lecture\_exists\_} означает member
+текущего объекта и при необходимости записывается
+\texttt{this->lecture\_exists\_}. Обычно явный \texttt{this->} здесь только
+зашумляет код.
+
+Это не означает копирование объекта при каждом call. Способ передачи скрытого
+адреса зависит от реализации и ABI; языковая семантика задаёт, к какому
+объекту относится вызов. Method принимает обычные parameters, возвращает
+values и может менять текущий non-const object.
+
+Compiler проверяет типы arguments, доступность method и допустимость операции
+для выбранного объекта. Runtime выполняется обычное тело функции и меняется
+member конкретного instance.
+
+\subsection{Definition вне class и operator ::}
+
+Короткие methods можно определить внутри class definition. Длинное тело часто
+выносят после объявления:
+
+\begin{cppcode}
+class Counter {
+public:
+    void add(int amount);
+    int value() const;
+
+private:
+    int value_{};
+};
+
+void Counter::add(int amount) {
+    value_ += amount;
+}
+
+int Counter::value() const {
+    return value_;
+}
+\end{cppcode}
+
+\texttt{Counter::add} означает: имя \texttt{add} находится в scope класса
+\texttt{Counter}. Это тот же scope resolution operator \texttt{::}, что в
+\texttt{std::cout}, но слева class, а не namespace. Declaration и definition
+должны согласоваться, включая parameters, return type и завершающий
+\texttt{const}.
+
+Definition внутри класса удобно для маленькой операции и по правилам языка
+--- inline definition; это не обещание машинного inlining. Вынос тела
+помогает отделить interface от implementation.
+
+\subsection{Public, private и граница доступа}
+
+\texttt{public} members образуют интерфейс, доступный caller. \texttt{private}
+members доступны самому классу (и friends, которые сейчас не нужны).
+
+\begin{cppcode}
+class CourseProgress {
+public:
+    bool is_complete() const { return lecture_ && examples_; }
+    void mark_lecture_found() { lecture_ = true; }
+
+private:
+    bool lecture_{};
+    bool examples_{};
+};
+
+CourseProgress progress;
+progress.mark_lecture_found(); // допустимо
+// progress.lecture_ = false;  // compile-time error: private
+\end{cppcode}
+
+Access control --- compile-time mechanism. Корректная программа не получает
+runtime-проверку на каждое обращение к private field. Если caller называет
+недоступный member, программа ill-formed, и compiler выдаёт diagnostic.
+
+\begin{warningbox}[Private не защищает от атак]
+\texttt{private} организует C++ interface, но не шифрует память и не создаёт
+security boundary. UB, ошибочный raw pointer или debugger не останавливаются
+словом \texttt{private}.
+\end{warningbox}
+
+Когда всё public, любое место программы может менять каждую деталь и зависит
+от её формы. Смена представления требует искать callers, а корректность
+поддерживается распределённой дисциплиной.
+
+\subsection{Encapsulation как технический приём}
+
+\begin{definition}
+\textbf{Encapsulation} здесь означает совместное размещение связанного
+состояния и операций, скрытие деталей representation и ограничение набора
+допустимых операций публичным interface.
+\end{definition}
+
+Это не лозунг «положить поля под \texttt{private}». Полезный результат:
+меньше раздельных параметров и комбинаций несогласованных данных; проверки и переходы состояния сосредоточены в небольшом числе methods; caller зависит от смысла операций, а не от способа хранения; representation можно менять без переписывания caller, пока сохраняется контракт interface.
+
+Например, реализация может заменить два bool members на другое внутреннее
+представление, оставив \texttt{is\_complete()} неизменным. Это возможность
+design, а не автоматическое обещание binary compatibility: изменение layout
+может быть существенно для отдельно собранных components.
+
+\subsection{Invariant: что должно оставаться истинным}
+
+\begin{definition}
+\textbf{Invariant объекта} --- условие, которое должно оставаться истинным для
+корректно используемого объекта на границах его публичных операций.
+\end{definition}
+
+Для \texttt{CourseBlock}: number находится в диапазоне 1--15, slug не пуст,
+а lecture/examples paths согласованы с number и slug. Плохой public record
+разрешает caller стереть slug, записать 99 и оставить старые paths. Хороший
+design не предоставляет таких операций: paths вычисляются вместе с identity,
+а public interface только читает измерения.
+
+\texttt{private} сам по себе invariant не гарантирует. Method может записать
+99 или ошибочно вычислить path. Гарантию создаёт совокупность interface и
+implementation, подтверждённая тестами. Compiler знает типы и access rules,
+но не выводит из предметной области диапазон 1--15.
+
+В практике применяется factory-like operation \texttt{CourseBlock::inspect}.
+Она строит согласованное состояние и возвращает его как value. Для создания
+внутри используется минимальный default constructor; полная модель
+constructors/destructors и более сильная инициализация --- тема блока~6.
+
+\subsection{Const member functions}
+
+\begin{cppcode}
+class CourseBlock {
+public:
+    int number() const { return number_; }
+    bool is_complete() const {
+        return lecture_exists_ && examples_exist_;
+    }
+
+private:
+    int number_{};
+    bool lecture_exists_{};
+    bool examples_exist_{};
+};
+\end{cppcode}
+
+\texttt{const} после parameter list относится к object parameter, а не к
+return type. Такой method обещает read-only access к обычному observable
+member state: через него нельзя присвоить значение обычному non-mutable
+member. Тему \texttt{mutable} сейчас не вводим.
+
+\begin{cppcode}
+void print_one(const CourseBlock& block) {
+    std::cout << block.number() << ' ' << block.is_complete() << '\n';
+}
+\end{cppcode}
+
+Связь с блоком~4 прямая: \texttt{const CourseBlock\&} даёт read-only alias без
+копии, а вызываемые через него methods должны быть const. Попытка вызвать
+modifying non-const method через const object --- compile-time error. Поэтому
+const methods формируют читающую часть interface.
+
+Const member function не обещает глобальную неизменность объекта: другой
+non-const alias может его изменить. Она также не решает lifetime и ownership.
+
+\subsection{Getter и setter: не цель инкапсуляции}
+
+Getter бывает уместен: \texttt{number()} сообщает устойчивое свойство,
+\texttt{lecture\_path()} предоставляет read-only view. Setter тоже нормален,
+если независимое присваивание действительно допустимо
+предметной области.
+
+Но \texttt{getX()/setX()} для каждого private field часто лишь имитирует
+public fields. Caller всё ещё создаёт бессмысленные переходы. Осмысленный
+interface говорит \texttt{is\_complete()},
+\texttt{mark\_lecture\_found()}, \texttt{missing\_parts()} или
+\texttt{lecture\_path()}; названия выражают задачу и дают реализации место
+поддержать invariant.
+
+Нельзя оценивать encapsulation числом getters. Важнее, какие неправильные
+действия interface сделал невозможными и какие изменения representation
+перестали затрагивать callers.
+
+\subsection{Responsibility, cohesion и free functions}
+
+У маленького класса должна быть одна внятная responsibility.
+\texttt{CourseBlock} представляет и инспектирует один блок. Он не разбирает
+command line и не печатает общую таблицу.
+
+\begin{definition}
+На начальном уровне высокая \textbf{cohesion} означает, что members и methods
+класса связаны одной ролью и его состоянием.
+\end{definition}
+
+Method естественен, когда операция требует состояния/invariant конкретного
+объекта: \texttt{block.is\_complete()}. Операция, не использующая это
+состояние, не обязана быть method. \texttt{print\_report(blocks)} и
+\texttt{read\_arguments(...)} остаются free functions.
+
+Заталкивание всех функций в один class создаёт God object: много причин для
+изменения, сильную связанность и трудный interface. Плохой class design может
+быть хуже ясных данных и нескольких функций.
+
+\subsection{Composition: отношение has-a}
+
+\begin{cppcode}
+class CourseBlock {
+    std::string slug_;
+    std::filesystem::path lecture_path_;
+    std::filesystem::path examples_path_;
+};
+\end{cppcode}
+
+\texttt{CourseBlock} has-a string и два path objects. Их lifetimes являются
+частью lifetime содержащего объекта. Уже знакомый
+\texttt{std::vector<CourseBlock>} содержит элементы. Composition естественна,
+когда модель действительно «имеет» часть; inheritance и virtual здесь не
+нужны и появятся позже.
+
+\subsection{Memory, lifetime и layout}
+
+Объект class type имеет lifetime по тем же общим правилам. Локальный
+\texttt{CourseBlock} живёт до выхода из scope; элемент vector --- пока
+существует элемент и операция контейнера его не уничтожила. Pointer/reference
+не продлевает lifetime.
+
+Non-static data members являются частями complete object. Их создание и
+уничтожение связано с содержащим объектом, но подробный порядок и управление
+ресурсами относятся к блоку~6. \texttt{sizeof(CourseBlock)} можно измерить:
+результат включает представления members и возможный padding. Нельзя по одному
+измерению объявлять точный layout гарантией всех compiler/ABI.
+
+Access specifiers не обязаны добавлять «флаг private» в object. Стандарт
+задаёт layout ограниченно; alignment, padding и представления библиотечных
+members зависят от реализации.
+
+\subsection{Cost model без объектной магии}
+
+Обычная non-virtual member function не требует отдельной объектной VM. Access
+control проверяется при трансляции; \texttt{public}/\texttt{private} сами по
+себе не runtime checks. Method может быть оптимизирован/inlined по тем же
+общим причинам, что free function.
+
+Нельзя утверждать, что method всегда быстрее или медленнее free function.
+Значимая стоимость здесь приходит от filesystem calls, allocations string и
+vector, копий и I/O. Encapsulation может не добавлять отдельной runtime платы,
+но плохой API способен вызвать лишние копии или coupling. Zero-overhead intent
+C++ --- возможность избежать обязательной доплаты, не обещание нулевой цены
+любого design. Virtual dispatch и vtable относятся только к блоку~7.
+
+\subsection{Эксперимент 1: реальный class-based refactoring}
+
+Каталог
+\texttt{examples/05\_classes\_and\_encapsulation/01\_course\_inventory\_classes}
+развивает \texttt{course\_inventory\_refactored} блока~4. CLI, столбцы,
+totals и классы exit codes сохранены.
+
+В procedural версии \texttt{BlockInfo} открывал каждую деталь. Теперь private
+members одного \texttt{CourseBlock} держат number, slug, согласованные paths
+и измерения. Static public operation \texttt{inspect} создаёт их вместе.
+Read-only methods \texttt{lecture\_lines()},
+\texttt{example\_file\_count()} и \texttt{is\_complete()} являются const.
+Setter для каждого field отсутствует: caller не должен переписывать измеренное
+состояние.
+
+\texttt{collect\_blocks}, \texttt{read\_arguments} и
+\texttt{print\_report} остались free functions: они управляют коллекцией, CLI
+и выводом, а не invariant одного блока. Поэтому \texttt{main} читает как
+сценарий, а не как God object.
+
+\begin{shellcode}
+cd examples/05_classes_and_encapsulation/01_course_inventory_classes
+cmake -S . -B build
+cmake --build build
+./build/course_inventory_classes --root ../../.. --block 5
+ctest --test-dir build --output-on-failure
+\end{shellcode}
+
+Эквивалентность проверяется запуском старого и нового executable с одинаковыми
+arguments, заменой только process-specific printed addresses и сравнением
+stdout через \texttt{diff}. PASS: normalized output и exit codes совпали,
+warnings отсутствуют, три CTest прошли.
+
+\subsection{Эксперимент 2: encapsulation\_break\_lab}
+
+В \texttt{02\_encapsulation\_break\_lab} public
+\texttt{struct PublicBlock} принимает number 99, пустой slug и несогласованные
+flags. \texttt{CourseProgress} скрывает state и предлагает
+\texttt{for\_block}, \texttt{mark\_lecture\_found},
+\texttt{mark\_examples\_found}, \texttt{is\_valid} и
+\texttt{is\_complete}. Два instances изменяются независимо.
+
+Free function \texttt{status\_line(const CourseProgress\&)} форматирует отчёт
+через read-only interface: форматирование не обязано быть method. Const
+reference вызывает const methods. Positive executable заканчивает
+\texttt{ENCAPSULATION\_BREAK\_LAB=PASS}.
+
+\begin{shellcode}
+cd examples/05_classes_and_encapsulation/02_encapsulation_break_lab
+cmake -S . -B build
+cmake --build build
+./build/encapsulation_break_lab
+ctest --test-dir build --output-on-failure
+\end{shellcode}
+
+CTest вызывает настоящий compiler для двух ill-formed files.
+\texttt{private\_access.cpp} пытается записать private \texttt{number\_};
+\texttt{const\_mutation.cpp} вызывает non-const modifying method через const
+object. PASS требует ненулевой exit status и непустую diagnostic в build.
+Текст ошибки не подделывается и различается между GCC/Clang.
+
+Sanitizers здесь N/A: проверяются compile-time запреты, а positive cases не
+выполняют опасной memory operation. Намеренное UB не проверило бы access
+control лучше.
+
+\subsection{Сильные стороны и цена}
+
+C++ позволяет создавать доменные типы, compiler проверяет access control и
+const object contract, а ordinary encapsulation может не иметь отдельной
+runtime платы. Programmer выбирает method для операции над состоянием и free
+function для внешней операции.
+
+Цена: бессмысленные getters/setters не создают хороший interface; compiler не
+знает business invariant; слишком большой class усиливает coupling; lifetime
+и ownership не исчезают. Constructors/destructors следующего блока нужны для
+более сильных invariants и resource-owning types.
+
+\subsection{Проверка понимания}
+
+После блока нужно уметь:
+1) различить class, object/instance, data member и member function; 2) назвать default-access различие \texttt{struct}/\texttt{class}; 3) объяснить operator \texttt{.}, текущий объект и базовую роль \texttt{this}; 4) описать public interface, private representation и границы защиты; 5) определить invariant и объяснить, почему private недостаточно; 6) прочитать definition method через \texttt{::}; 7) объяснить \texttt{const} после parameter list; 8) отличить domain operation от механического setter; 9) решить, должна ли операция быть method или free function; 10) описать composition, lifetime members и осторожный cost model; 11) показать, чем новый \texttt{CourseBlock} лучше procedural record; 12) интерпретировать обе реальные negative diagnostics.
+
+\subsection{Источники для сверки}
+
+Class definitions, members, access control, \texttt{this}, cv-qualification
+member functions, member access и object lifetime сверены с C++17 working
+draft N4659. Последовательность user-defined datatype, instance, fields,
+methods, composition и \texttt{::} сопоставлена с MIT 6.096 Lecture~6; из
+Lecture~7 использована только encapsulation, без inheritance/polymorphism.
+Старые публичные учебные classes не приняты как современное правило design.
+Style и target-based сборка сверены с локальными \textit{Modern C++ Tutorial}
+и \textit{Modern CMake}.

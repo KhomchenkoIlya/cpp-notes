@@ -1,0 +1,455 @@
+% Lecture 07: Наследование и полиморфизм
+
+\section{Лекция 7. Наследование и полиморфизм}
+\label{sec:lecture-07}
+
+В блоках~5--6 один class описывал один самостоятельный тип: состояние,
+инвариант, создание, копирование и уничтожение. Теперь несколько видов
+проверок блока курса должны запускаться одинаково, хотя каждая проверяет своё
+условие. Нужен общий контракт поведения, но не обязательно одна реализация.
+
+\begin{importantbox}[Главный вопрос]
+Когда один тип --- разновидность другого, как C++
+выбирает реализацию операции runtime и почему копирование derived object в
+base object меняет смысл программы?
+\end{importantbox}
+
+\subsection{Inheritance --- отношение между типами}
+
+\begin{cppcode}
+class Report {
+public:
+    virtual std::string kind() const { return "Report"; }
+};
+
+class LectureReport : public Report {
+public:
+    std::string kind() const override { return "LectureReport"; }
+};
+\end{cppcode}
+
+\texttt{Report} --- base class, \texttt{LectureReport} --- derived class.
+Запись \texttt{: public Report} сообщает design-намерение: объект
+\texttt{LectureReport} допустимо использовать там, где контракт требует
+\texttt{Report}.
+
+\begin{definition}
+\textbf{Inheritance} вводит отношение base--derived между типами.
+\textbf{Runtime polymorphism} позволяет обращаться к объектам разных derived
+types через общий base interface и выбирать virtual implementation по типу
+фактического объекта.
+\end{definition}
+
+Повтор кода сам по себе недостаточен. Если два несвязанных типа имеют функцию
+\texttt{print}, один не становится разновидностью другого. Общий алгоритм
+можно вынести в функцию или member-object. Inheritance оправдано, когда важны
+общий контракт и substitutability.
+
+\subsection{Is-a и has-a до синтаксиса}
+
+Сначала формулируем связь предметной области:
+\texttt{Car is-a Vehicle}: автомобиль --- вид транспортного средства; public inheritance может соответствовать смыслу; \texttt{Car has-a Engine}: автомобиль имеет двигатель; engine --- member/collaborator, то есть нужна composition; \texttt{CourseAudit has checking components}: аудит использует компоненты проверок, но сам не совпадает с конкретной проверкой.
+
+Интуитивная проверка подстановки: если функция обещает работать с любым
+\texttt{Vehicle}, сохраняет ли \texttt{Car} ожидания base contract? Это
+подводит к Liskov substitution, но полный SOLID относится к блоку~8.
+
+Неверный пример --- \texttt{class Engine : public Car}: двигатель --- не автомобиль. Наследование ради доступа к готовому коду создало бы ложную
+связь. Аналогично \texttt{CourseAudit : BlockCheck} сомнительно, если аудит
+координирует несколько checks, а не представляет одну взаимозаменяемую check.
+
+\begin{whybox}[Composition не «побеждает всегда»]
+Для has-a/uses-a и переиспользования реализации без substitutability обычно
+предпочтительна composition. Для independently extensible операций, которые
+должны вызываться через единый interface runtime, public inheritance может
+точнее выразить задачу.
+\end{whybox}
+
+\subsection{Base subobject и доступ к members}
+
+Derived object содержит base class subobject. Это корректная модель языка:
+при создании \texttt{LectureReport} сначала инициализируется его
+\texttt{Report} subobject, затем собственные members derived. Не следует
+говорить «base просто лежит как поле»: у base subobject специальные правила,
+включая conversions и virtual dispatch.
+
+\begin{cppcode}
+class Report {
+public:
+    const std::string& name() const { return name_; }
+protected:
+    void mark_checked() { checked_ = true; }
+private:
+    std::string name_;
+    bool checked_{};
+};
+\end{cppcode}
+
+Derived может вызвать \texttt{mark\_checked}, но не обратиться прямо к
+\texttt{name\_} или \texttt{checked\_}. Private state существует в base
+subobject, но base сохраняет контроль над invariant. Много protected data
+ослабляет encapsulation: каждый derived сможет создавать новые сочетания
+state. Обычно private data и узкие protected/public operations проще
+контролировать.
+
+\subsection{Public, protected и private inheritance}
+
+\begin{center}\small
+\begin{tabularx}{\textwidth}{@{}lXXX@{}}
+\toprule
+Форма & public member base & protected member base & обычный смысл \\
+\midrule
+\texttt{public Base} & public & protected & is-a, substitutability \\
+\texttt{protected Base} & protected & protected & специальная реализация \\
+\texttt{private Base} & private & private & implementation technique \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+Private members base всё равно не становятся доступны derived напрямую.
+Protected/private inheritance существуют, но не выражают публичное is-a для
+caller. Основной production-style лекции --- \texttt{public Base}. Access
+inheritance не надо путать с access sections внутри class.
+
+\subsection{Static type и dynamic type --- центр модели}
+
+\begin{cppcode}
+LectureReport lecture;
+Report& reference{lecture};
+Report* pointer{&lecture};
+\end{cppcode}
+
+\begin{definition}
+\textbf{Static type} expression известен compiler из исходного кода. Static
+types имён \texttt{reference} и \texttt{pointer} --- \texttt{Report\&} и
+\texttt{Report*}. \textbf{Dynamic type} обозначенного ими most-derived object
+во время вызова --- \texttt{LectureReport}.
+\end{definition}
+
+Reference и pointer здесь не владеют объектом. \texttt{lecture} имеет
+automatic storage duration и должен оставаться жив дольше их использования.
+Pointer может быть \texttt{nullptr}; reference обозначает обязательный object.
+
+\begin{cppcode}
+Report report = lecture;
+\end{cppcode}
+
+У самостоятельного \texttt{report} static и dynamic object type ---
+\texttt{Report}. Это новый base object, не скрытый derived object.
+
+\subsection{Non-virtual и virtual dispatch}
+
+\begin{cppcode}
+class Report {
+public:
+    std::string non_virtual_kind() const { return "Report"; }
+    virtual std::string virtual_kind() const { return "Report"; }
+};
+
+Report& view{lecture};
+view.non_virtual_kind(); // Report: static dispatch
+view.virtual_kind();     // LectureReport: dynamic dispatch
+\end{cppcode}
+
+Non-virtual member выбирается по static type expression. Для virtual call
+через base pointer/reference final overrider выбирается по dynamic type
+object runtime. Virtual member остаётся virtual в derived без повторного
+слова \texttt{virtual}. Modern C++ всё равно пишет:
+
+\begin{cppcode}
+std::string virtual_kind() const override;
+\end{cppcode}
+
+\texttt{override} не «включает virtual заново». Оно фиксирует намерение и
+требует от compiler найти подходящую virtual function base. Если забыть
+\texttt{const}, изменить parameter type или ошибиться в имени, compilation
+завершится ошибкой вместо создания другой функции.
+
+\begin{mistakebox}[Overriding не overloading]
+Overriding заменяет virtual behavior base для подходящей signature в derived.
+Overloading создаёт функции одного имени с разными parameter lists. Derived
+declaration с похожим именем способно скрыть base overloads; совпадения имени
+недостаточно. \texttt{override} защищает от этой путаницы.
+\end{mistakebox}
+
+\subsection{Object slicing: новое base value}
+
+\begin{cppcode}
+void print_by_value(Report report);
+LectureReport lecture{"lecture 07", 500};
+print_by_value(lecture);
+\end{cppcode}
+
+Parameter \texttt{report} --- новый \texttt{Report} object. Он
+инициализируется из base subobject argument; derived-specific members вроде
+\texttt{lines\_} в него не входят. Dynamic type parameter равен
+\texttt{Report}, поэтому даже virtual call выбирает base behavior.
+
+\begin{definition}
+\textbf{Object slicing} --- потеря derived-specific части при создании base
+object by value из derived object. Копируется base portion/state, но новый
+object --- не alias исходного derived object.
+\end{definition}
+
+\begin{cppcode}
+void print_by_reference(const Report& report);
+print_by_reference(lecture); // нет нового Report, slicing отсутствует
+Report* view{&lecture};       // non-owning view того же object
+\end{cppcode}
+
+Reference/pointer обозначает существующий \texttt{LectureReport}, поэтому
+dynamic type сохраняется. Polymorphic objects обычно передают по reference или
+pointer, если нужна identity/dynamic behavior, а не новая base value. Slicing
+не обязан вызывать warning: программа может быть формально корректна, но иметь
+неверную semantics.
+
+\subsection{Pure virtual function и abstract class}
+
+\begin{cppcode}
+class BlockCheck {
+public:
+    virtual ~BlockCheck() = default;
+    virtual bool passes(const CourseBlock& block) const = 0;
+};
+\end{cppcode}
+
+\texttt{= 0} делает функцию pure virtual. Class с pure virtual function
+--- abstract: создать самостоятельный \texttt{BlockCheck} нельзя.
+Concrete derived предоставляет final overrider:
+
+\begin{cppcode}
+class LectureExistsCheck final : public BlockCheck {
+public:
+    bool passes(const CourseBlock& block) const override {
+        return block.lecture_exists();
+    }
+};
+\end{cppcode}
+
+Abstract class задаёт interface-like contract, но C++ не требует превращать
+все classes в «интерфейсы». Он способен иметь state, implemented members и
+constructors. Здесь stateless interface точнее задачи. \texttt{final}
+запрещает дальнейшее наследование от concrete check; это локальное решение.
+
+\subsection{Virtual destructor и polymorphic deletion}
+
+Главная lifetime-опасность возникает не от любого base pointer, а от
+уничтожения объекта через него:
+
+\begin{cppcode}
+class SafeBase {
+public:
+    virtual ~SafeBase() = default;
+};
+class SafeDerived : public SafeBase {
+public:
+    ~SafeDerived() override = default;
+};
+
+SafeBase* base = new SafeDerived;
+delete base; // destruction начинается с SafeDerived
+\end{cppcode}
+
+Virtual destructor выбирается по dynamic type. Сначала выполняется destructor
+derived class, затем уничтожаются derived members и base subobject через
+destructor base class. Если base используется
+polymorphically и контракт допускает \texttt{delete} через base pointer,
+destructor base должен быть virtual.
+
+\begin{ubbox}[Non-virtual destructor]
+Если static type operand \texttt{delete} отличается от dynamic type object,
+для корректности base должен иметь virtual destructor с учётом точных правил
+языка. Удаление \texttt{UnsafeDerived} через \texttt{UnsafeBase*} без него
+имеет undefined behavior. Это не гарантирует ни «только base destructor», ни
+crash: после UB стандарт не задаёт результат.
+\end{ubbox}
+
+Raw \texttt{new}/\texttt{delete} используются только в изолированном negative
+experiment. Основной design применяет automatic objects и non-owning views с
+очевидным lifetime. Smart pointers появятся позже.
+
+\subsection{Construction и destruction иерархии}
+
+\begin{cppcode}
+LectureReport::LectureReport(const std::string& name, int lines)
+    : Report{name}, lines_{lines} {}
+\end{cppcode}
+
+Base subobject создаётся до members derived, а тело derived constructor
+выполняется после initialization. Уничтожение идёт обратно: сначала derived
+destructor и members derived, затем base. Это продолжает lifetime model
+блока~6.
+
+Virtual calls из constructors/destructors требуют осторожности. Во время base
+construction более-derived часть ещё не построена, а во время base
+destruction уже уничтожена. Dispatch ограничен текущим этапом иерархии, а не
+ведёт себя как вызов через полностью готовый most-derived object. Не следует
+строить initialization/cleanup на ожидании derived override из base
+constructor/destructor.
+
+\subsection{Composition и inheritance на одной задаче}
+
+Проект проверяет \texttt{CourseBlock}: есть ли lecture file, examples
+directory и содержимое. В inheritance-design каждая проверка is-a
+\texttt{BlockCheck}:
+
+\begin{cppcode}
+LectureExistsCheck lecture;
+ExamplesExistCheck examples;
+ContentCheck content;
+const std::array<const BlockCheck*, 3> checks{
+    &lecture, &examples, &content
+};
+for (const BlockCheck* check : checks) {
+    results.push_back(check->run(block));
+}
+\end{cppcode}
+
+Checks живут до конца функции, поэтому pointers --- безопасные non-owning
+views. Плюс: caller одинаково запускает independently extensible types, не
+зная concrete class. Цена: base interface, virtual functions и class на
+каждое правило создают coupling и boilerplate.
+
+Composition-design использует collaborators:
+
+\begin{cppcode}
+class CourseAudit {
+public:
+    std::vector<CheckResult> run(const CourseBlock& block) const;
+private:
+    PathChecks paths_;
+    ContentChecks content_;
+};
+\end{cppcode}
+
+\texttt{CourseAudit has-a PathChecks} и \texttt{ContentChecks}. Для
+фиксированного локального набора правил форма короче, вызовы static и нет
+ложной is-a relation. Если проверки должны независимо выбираться runtime через
+стабильный contract, polymorphic \texttt{BlockCheck} полезнее. Решение зависит
+от отношения и точки изменения, а не от лозунга.
+
+\subsection{Memory model и стоимость без мифов}
+
+Стандарт задаёт observable behavior virtual calls, но не требует vtable или
+vptr layout. Обычная ABI implementation хранит в polymorphic object
+служебный pointer (vptr) на таблицу virtual functions (vtable), а call может
+стать indirect call. Это mental model, не переносимая layout guarantee.
+
+\texttt{sizeof(Report)} и \texttt{sizeof(LectureReport)} можно измерить, но
+числа зависят от compiler, ABI, members, alignment и platform. Metadata в
+обычной реализации способна увеличить object size. Inheritance без virtual
+functions само по себе не обязано добавлять runtime dispatch overhead.
+
+\begin{performancebox}[Virtual не означает «всегда медленно»]
+Virtual call часто реализуется как indirect call, что влияет на inlining и
+branch prediction. Compiler иногда знает dynamic type и devirtualizes вызов.
+Итог зависит от optimization/context; allocations, algorithm и locality могут
+быть важнее одного dispatch. Нужны benchmark/assembly конкретной сборки.
+\end{performancebox}
+
+Dynamic dispatch --- выбранная стоимость runtime substitutability. Когда
+вариативность не нужна, ordinary function или composition оставляют выбор
+compile time. Цель --- платить за механизм там, где contract требует runtime
+choice.
+
+\subsection{Эксперимент 1: polymorphism\_failure\_lab}
+
+Safe executable показывает контраст:
+
+\begin{outputcode}
+static dispatch: Report
+dynamic dispatch: LectureReport
+pointer dispatch: LectureReport
+sliced value: kind=Report, name=07_inheritance_and_polymorphism
+reference: kind=LectureReport, name=07_inheritance_and_polymorphism
+virtual destructor trace:
+destroy SafeDerived
+destroy SafeBase
+POLYMORPHISM_FAILURE_LAB=PASS
+\end{outputcode}
+
+Полный output также подтверждает protected operation, derived state и concrete
+реализацию abstract interface. Три CTest cases требуют compilation failure:
+нет \texttt{const} у \texttt{override}; создаётся abstract base; derived
+напрямую обращается к private base state.
+
+\begin{shellcode}
+cd examples/07_inheritance_and_polymorphism/01_polymorphism_failure_lab
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug
+cmake --build build
+./build/polymorphism_failure_lab
+ctest --test-dir build --output-on-failure
+\end{shellcode}
+
+Unsafe executable не входит в normal run:
+
+\begin{shellcode}
+cmake -S . -B build-sanitize -DENABLE_UNSAFE_CASE=ON \
+  -DCMAKE_BUILD_TYPE=Debug
+cmake --build build-sanitize
+ctest --test-dir build-sanitize --output-on-failure
+\end{shellcode}
+
+На фактической GCC~13/ASan сборке unsafe process завершился nonzero, а test
+нашёл relevant AddressSanitizer diagnostic. PASS означает выполненный bad path
+и ожидаемую причину, не «UB стало безопасным». На другой toolchain diagnostic
+может отличаться; языковое правило остаётся.
+
+\subsection{Эксперимент 2: project design lab}
+
+\texttt{02\_inheritance\_vs\_composition\_project\_lab} читает реальные
+lecture/examples блока~07. Оба design дают одинаковый результат:
+
+\begin{outputcode}
+inheritance:
+  lecture exists=PASS
+  examples directory exists=PASS
+  lecture and examples non-empty=PASS
+composition:
+  lecture exists=PASS
+  examples directory exists=PASS
+  lecture and examples non-empty=PASS
+same observable results=true
+PROJECT_DESIGN_LAB=PASS
+\end{outputcode}
+
+\begin{shellcode}
+cd examples/07_inheritance_and_polymorphism/02_inheritance_vs_composition_project_lab
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug
+cmake --build build
+./build/project_lab --root ../../..
+ctest --test-dir build --output-on-failure
+\end{shellcode}
+
+PASS требует exit code~0, трёх успешных checks и эквивалентного observable
+result. Для fixed audit composition проще. Inheritance-version показывает
+полезную точку: новый concrete \texttt{BlockCheck} можно передать тому же
+caller. Это reusable audit idea, но не преждевременный framework.
+
+\subsection{Сильные стороны и цена механизма}
+
+C++ включает runtime polymorphism в type system: compiler проверяет
+conversions и \texttt{override}, programmer выбирает static/dynamic dispatch,
+а public inheritance выражает настоящую substitutability. Composition остаётся
+отдельным инструментом, и virtual abstraction не навязывается каждому class.
+
+Цена ошибок: ложная hierarchy усиливает coupling; slicing может тихо изменить
+semantics; non-virtual destructor опасен при polymorphic deletion; layout
+становится менее очевидным; indirect dispatch может влиять на optimization.
+Inheritance ради одного code reuse часто ухудшает design, потому что обещает
+отношение между типами, которого в задаче нет.
+
+\subsection{Проверка понимания}
+
+После блока нужно уметь:
+1) назвать base/derived и прочитать \texttt{class D : public B}; 2) отличить is-a от has-a и предложить composition для второго; 3) объяснить public inheritance и осторожное применение protected; 4) определить static/dynamic type до объяснения virtual call; 5) предсказать non-virtual и virtual output через base view; 6) объяснить \texttt{override} как compiler-checked intent; 7) причинно описать slicing и отличие base value от alias; 8) объяснить pure virtual function и abstract class; 9) обосновать virtual destructor именно polymorphic deletion; 10) назвать порядок base/derived construction/destruction; 11) сравнить inheritance/composition без абсолютного правила; 12) отделить vptr/vtable model от standard guarantee; 13) оценивать virtual cost по контексту, а не словом «всегда».
+
+\subsection{Источники для сверки}
+
+Base/derived classes, virtual functions, final overrider, abstract classes,
+initialization/destruction и delete-expression сверены с C++17 working draft
+N4659, прежде всего clauses~10, 12 и 15. Педагогическая последовательность
+сопоставлена с MIT 6.096 Lecture~7, а classes/lifetime --- с Lectures~6 и~8.
+Современное применение \texttt{override} сверено с локальным \textit{Modern
+C++ Tutorial}. Vtable/vptr названы обычной ABI strategy, не требованием
+стандарта; performance context согласован с локальным C++ Performance TR.

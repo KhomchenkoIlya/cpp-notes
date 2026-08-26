@@ -1,0 +1,482 @@
+% Lecture 02: Объявления, управление потоком и ошибки
+
+\section{Лекция 2. Объявления, поток управления и ошибки}
+\label{sec:lecture-02}
+
+Первая программа выполняла почти прямую последовательность команд. Реальная
+программа должна хранить состояние, принимать решения, повторять действия и
+останавливаться при нужном условии. Поэтому поток управления --- не набор
+отдельных ключевых слов, а способ записать алгоритм.
+
+\begin{importantbox}[Что нужно уметь после лекции]
+Объявлять и инициализировать простые локальные объекты, строить выражения,
+писать ветвления и циклы, проверять ввод, объяснять область видимости и
+различать compile-time, linker, runtime, logic errors и undefined behavior.
+Итоговая практическая цель --- небольшой корректный консольный инструмент.
+\end{importantbox}
+
+\subsection{Имя, объект, значение и состояние}
+
+\begin{cppcode}
+int attempts{0};
+bool running{true};
+double threshold{2.5};
+char command{'s'};
+\end{cppcode}
+
+\begin{definition}
+\textbf{Identifier} --- имя, которым исходный код обозначает сущность.
+В примере это \texttt{attempts}, \texttt{running}, \texttt{threshold} и
+\texttt{command}. Имя не может начинаться с цифры и не должно совпадать с
+ключевым словом.
+\end{definition}
+
+\begin{definition}
+\textbf{Объект} в терминологии C++ --- область хранения с типом и временем
+жизни. \textbf{Значение} --- информация, которую выражение вычисляет или
+объект хранит. Переменной будем называть именованный объект, значение которого
+можно менять.
+\end{definition}
+
+Это точнее бытовой фразы «переменная --- коробка». Коробка полезна как первая
+модель, но стандарт не обещает, что локальный объект обязательно лежит в CPU
+stack: оптимизатор может держать значение в регистре или вообще устранить
+отдельное хранение, сохранив наблюдаемое поведение программы.
+
+Тип \texttt{int} хранит целые из диапазона, зависящего от реализации;
+стандарт не обещает ему ровно четыре байта. \texttt{double} --- один из
+floating-point типов, а не точные вещественные числа. \texttt{char} хранит
+символьные/малые целочисленные значения, \texttt{bool} --- \texttt{false} или
+\texttt{true}. Этих фундаментальных типов достаточно для текущих алгоритмов.
+
+\subsection{Declaration, definition, initialization, assignment}
+
+\begin{definition}
+\textbf{Declaration} сообщает компилятору имя и свойства сущности. Definition
+--- объявление, которое вводит саму сущность; для
+обычного локального объекта definition предоставляет хранение.
+\end{definition}
+
+\begin{cppcode}
+int score{10};       // definition и initialization
+score = 12;          // assignment уже существующему объекту
+extern int total;    // declaration; definition может быть в другом .cpp
+\end{cppcode}
+
+Инициализация создаёт начальное значение в момент начала lifetime объекта.
+Присваивание заменяет значение уже живого объекта. Поэтому слова
+«инициализируем второй раз» для \texttt{score = 12} неверны.
+
+Основные формы, достаточные сейчас:
+
+\begin{cppcode}
+int a = 3;     // copy-initialization
+int b(3);      // direct-initialization
+int c{3};      // direct-list-initialization
+int count{};   // value-initialization: для int получаем 0
+\end{cppcode}
+
+Фигурная форма хорошо видит некоторые narrowing conversions:
+
+\begin{cppcode}
+int truncated = 3.9; // допустимо с потерей дробной части; warning зависит от флагов
+// int rejected{3.9}; // ошибка: list-initialization запрещает narrowing
+\end{cppcode}
+
+Не нужно превращать выбор скобок в догму. В учебных локальных объектах
+\texttt{\{\}} явно показывает инициализацию и защищает от части сужений.
+
+\begin{cppcode}
+const int block_count{15};
+// block_count = 16; // compile-time error
+\end{cppcode}
+
+\texttt{const} означает, что через это имя нельзя менять объект после
+инициализации. Это полезный контракт намерения, а не обещание разместить число
+в особой физической памяти.
+
+\subsection{Литералы, выражения и преобразования}
+
+Литерал записывает значение прямо в исходнике: \texttt{42}, \texttt{3.5},
+\texttt{'q'}, \texttt{true}. Выражение сочетает литералы, имена и операторы и
+вычисляет значение:
+
+\begin{cppcode}
+int completed{7};
+int total{15};
+int remaining = total - completed;
+bool finished = remaining == 0;
+\end{cppcode}
+
+Арифметика использует \texttt{+}, \texttt{-}, \texttt{*}, \texttt{/} и для
+целых \texttt{\%}. При \texttt{7 / 2} оба операнда целые, результат равен 3.
+В \texttt{7.0 / 2} целое 2 преобразуется к floating-point, результат 3.5.
+
+\begin{cppcode}
+int part{1};
+int whole{4};
+double wrong = part / whole;       // сначала integer 0, затем double 0.0
+double right = 1.0 * part / whole; // 0.25
+\end{cppcode}
+
+Неявное \texttt{int} $\rightarrow$ \texttt{double} удобно, но некоторые
+большие целые представляются неточно. Обратное преобразование отбрасывает
+дробную часть; слишком большое floating-point значение для целевого целого
+типа может привести к undefined behavior. Сужение лучше делать заметным и
+предварительно проверять диапазон. Подробные casts появятся позже.
+
+Операторы \texttt{==}, \texttt{!=}, \texttt{<}, \texttt{<=}, \texttt{>},
+\texttt{>=} возвращают \texttt{bool}. Логические \texttt{\&\&},
+\texttt{||}, \texttt{!} означают «и», «или», «не»:
+
+\begin{cppcode}
+const bool valid_number = number >= 1 && number <= 15;
+const bool should_print = show_all || !pair_complete;
+\end{cppcode}
+
+\subsubsection{Short-circuit --- не только оптимизация}
+
+Для \texttt{left \&\& right} правый операнд вычисляется только если левый
+оказался \texttt{true}. Для \texttt{left || right} --- только если левый
+оказался \texttt{false}. Это гарантия языка и способ безопасно поставить
+проверку перед опасной операцией:
+
+\begin{cppcode}
+const bool ratio_is_large = denominator != 0 && numerator / denominator > 2;
+\end{cppcode}
+
+Если знаменатель ноль, деление не выполняется. Переставить операнды нельзя:
+integer division by zero имеет undefined behavior.
+
+\subsection{Ветвление if: порядок проверок проектирует алгоритм}
+
+\begin{cppcode}
+if (score < 0) {
+    std::cout << "invalid\n";
+} else if (score < 50) {
+    std::cout << "needs work\n";
+} else {
+    std::cout << "passed\n";
+}
+\end{cppcode}
+
+Условия проверяются сверху вниз. Выполняется первое подходящее тело, остальные
+ветви цепочки пропускаются. Значит, порядок влияет на корректность:
+сначала часто ставят ошибки и более узкие случаи, затем общий случай.
+
+Вложенный \texttt{if} нужен, когда второе решение имеет смысл только внутри
+первого:
+
+\begin{cppcode}
+if (lecture_exists) {
+    if (examples_exist) {
+        std::cout << "complete pair\n";
+    } else {
+        std::cout << "examples missing\n";
+    }
+}
+\end{cppcode}
+
+Фигурные скобки синтаксически необязательны для одного statement, но в нашем
+стиле ставятся всегда: добавление второй строки тогда не изменит границы ветви.
+
+\begin{mistakebox}[Присваивание вместо сравнения]
+\texttt{if (answer = 0)} присваивает ноль и затем преобразует результат к
+\texttt{bool}; это корректный синтаксис, но почти наверняка logic error.
+GCC с \texttt{-Wall -Wextra -Wpedantic} реально пишет warning вида
+\texttt{suggest parentheses around assignment used as truth value}.
+Нужное сравнение: \texttt{if (answer == 0)}.
+\end{mistakebox}
+
+Warning не обязан останавливать сборку и не доказывает
+ошибки. Но его нужно прочитать и устранить или осознанно обосновать.
+
+\subsection{switch: выбор по дискретному значению}
+
+Меню естественно выражается через \texttt{switch}:
+
+\begin{cppcode}
+switch (choice) {
+case 1:
+    std::cout << "show all\n";
+    break;
+case 2:
+    std::cout << "check one\n";
+    break;
+case 3:
+case 4:
+    std::cout << "report\n";
+    break;
+default:
+    std::cout << "unknown command\n";
+    break;
+}
+\end{cppcode}
+
+Выражение \texttt{switch} вычисляется один раз, затем выбирается совпавший
+\texttt{case}; \texttt{default} обрабатывает отсутствие совпадения.
+\texttt{break} выходит из ближайшего \texttt{switch}. Без него выполнение
+продолжается в следующий case --- это fallthrough. Иногда оно намеренно, как
+для 3 и 4 выше. Если между непустыми case переход нужен специально, C++17
+позволяет отметить его \texttt{[[fallthrough]];}.
+
+\begin{implementationbox}
+Компилятор может реализовать \texttt{switch} цепочкой сравнений, jump table
+или иначе. Стандарт задаёт поведение, но не требует jump table. Выбираем
+\texttt{switch} ради ясности дискретного выбора, не по легенде о скорости.
+\end{implementationbox}
+
+Для диапазонов и сложных независимых условий удобнее \texttt{if}; case labels
+должны быть подходящими constant expressions и не могут означать диапазон.
+
+\subsection{Циклы: повторение с условием остановки}
+
+Перед циклом ответьте на четыре вопроса: какое состояние меняется, когда
+продолжаем, какой шаг приближает остановку и что должно оставаться истинным.
+
+\subsubsection{while и validation loop}
+
+\begin{cppcode}
+int number{};
+while (!(std::cin >> number) || number < 1 || number > 15) {
+    std::cout << "Enter an integer from 1 to 15: ";
+    std::cin.clear();
+    std::cin.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
+}
+\end{cppcode}
+
+\texttt{while} сначала проверяет условие, поэтому тело может не выполниться ни
+разу. Здесь готовый stream API сообщает об ошибке ввода; \texttt{clear}
+сбрасывает состояние ошибки, \texttt{ignore} удаляет неподходящий остаток
+строки. Это validation loop: выход возможен только после допустимого значения.
+
+\subsubsection{do while}
+
+\begin{cppcode}
+int choice{};
+do {
+    std::cout << "1 - continue, 0 - exit: ";
+    std::cin >> choice;
+} while (choice != 0);
+\end{cppcode}
+
+\texttt{do while} проверяет условие после тела, поэтому тело выполняется хотя
+бы один раз. Это бывает естественно для показа меню, но если ввод может
+сломаться, всё равно нужна явная обработка состояния потока.
+
+\subsubsection{for и границы}
+
+\begin{cppcode}
+int sum{};                              // accumulator
+for (int value = 1; value <= 5; ++value) {
+    sum += value;
+}
+\end{cppcode}
+
+Порядок таков: initialization выполняется один раз; condition проверяется
+перед каждой итерацией; затем тело; iteration expression; новая проверка.
+Переменная \texttt{value} видна в заголовке и теле, но после цикла её scope
+заканчивается. \texttt{sum} --- accumulator: хранит результат уже обработанной
+части. Переменная, считающая события, называется counter.
+
+\begin{mistakebox}[Off-by-one]
+Для значений 1, 2, 3, 4, 5 нужно \texttt{value <= 5}. Условие
+\texttt{value < 5} выполнит четыре итерации. Для индексов последовательности,
+напротив, обычно естествен полуинтервал \texttt{0 <= index < size}.
+Проверяйте первую, последнюю и пустую итерации отдельно.
+\end{mistakebox}
+
+Если шаг не меняет состояние к остановке, например забыто \texttt{++value},
+может возникнуть бесконечный цикл. Запись \texttt{while (true)} сама по себе
+не ошибка: menu loop может завершаться явным \texttt{break}, но путь выхода
+должен быть понятен.
+
+\subsubsection{break, continue, sentinel и поиск}
+
+\texttt{break} завершает ближайший цикл. \texttt{continue} пропускает остаток
+текущей итерации и переходит к следующей проверке/шагу. Чрезмерное количество
+таких переходов усложняет чтение, но для раннего отсева они полезны:
+
+\begin{cppcode}
+for (int value = 1; value <= 20; ++value) {
+    if (value % 2 != 0) {
+        continue;
+    }
+    if (value > 10) {
+        std::cout << "first suitable: " << value << '\n';
+        break;
+    }
+}
+\end{cppcode}
+
+Sentinel-controlled loop заканчивает последовательность по специальному
+значению, которое не хранит данные:
+
+\begin{cppcode}
+int sum{};
+int value{};
+while (std::cin >> value && value != -1) {
+    sum += value;
+}
+\end{cppcode}
+
+Здесь \texttt{-1} --- sentinel. Short-circuit гарантирует: сравнение
+выполняется только после успешного чтения. Так обрабатывается последовательность
+неизвестной длины.
+
+\subsubsection{Loop invariant --- человеческое доказательство}
+
+Инвариант --- утверждение, истинное перед каждой итерацией. Для суммирования:
+«\texttt{sum} равен сумме уже обработанных значений». Оно истинно до первой
+итерации (обработанных значений нет, \texttt{sum == 0}); тело сохраняет его,
+добавляя ровно текущее значение; вместе с условием выхода оно объясняет итог.
+Это не формальная магия, а компактный способ проверить алгоритм.
+
+\subsection{Block scope, shadowing и lifetime}
+
+Фигурные скобки создают block scope:
+
+\begin{cppcode}
+int count{1};
+if (count > 0) {
+    int message_count{2};
+    std::cout << message_count << '\n';
+}
+// message_count здесь не виден
+\end{cppcode}
+
+Scope отвечает, где имя можно использовать в тексте программы. Lifetime
+отвечает, когда объект существует при выполнении. Для простого локального
+объекта в блоке lifetime начинается после корректной инициализации и
+заканчивается при выходе из блока; эти понятия связаны, но не одинаковы.
+
+\begin{cppcode}
+int status{1};
+if (ready) {
+    int status{2}; // shadowing: скрывает внешнее имя внутри блока
+    std::cout << status << '\n';
+}
+\end{cppcode}
+
+Shadowing допустим, но легко заставляет читать не тот \texttt{status}. В
+обычном коде лучше выбрать другое имя. Компиляторы могут иметь отдельные
+warnings для shadowing; базовые три флага не обязаны включать их все.
+
+\subsection{Карта ошибок по pipeline}
+
+\textbf{Compile-time error:} исходник не удовлетворяет правилам языка, например присваивание объекту \texttt{const}; executable не создаётся; \textbf{Linker error:} translation unit скомпилирован, но linker не нашёл definition объявленной сущности: обычное \texttt{undefined reference}. Это продолжает pipeline лекции~1; \textbf{Warning:} compiler сообщает о подозрительном, но обычно допустимом коде; сборка может продолжиться; \textbf{Runtime failure:} программа запустилась, но не смогла выполнить задачу: например, не найден корень курса или вход неожиданно закончился. Ненулевой exit status позволяет сообщить об этом окружению; \textbf{Logic error:} программа корректно компилируется и выполняется, но даёт неверный ответ, например сумма 1--5 вычисляется циклом \texttt{value < 5}; \textbf{Undefined behavior (UB):} стандарт не накладывает требований на поведение, например при signed integer overflow или integer division by zero. UB не обязано приводить к crash.
+
+Implementation-defined behavior означает, что реализация выбирает один из
+допустимых вариантов и документирует выбор (например, размер \texttt{int}).
+Unspecified behavior также допускает несколько вариантов, но реализация не
+обязана документировать выбор. Это не синонимы UB.
+
+\begin{ubbox}[Почему «у меня работает» недостаточно]
+Неправильная программа с UB может напечатать ожидаемое число, упасть или
+изменить поведение после оптимизации. Проверять нужно правила операции, а не
+только один запуск на одной машине.
+\end{ubbox}
+
+\subsection{Diagnostics: compiler и sanitizer решают разные задачи}
+
+Для GCC и Clang используем минимум:
+
+\begin{shellcode}
+g++ -std=c++17 -Wall -Wextra -Wpedantic program.cpp -o program
+\end{shellcode}
+
+Компилятор обязан диагностировать некоторые нарушения, а warnings помогают
+найти дополнительные подозрительные места. Но корректная сборка не доказывает
+корректность алгоритма.
+
+UndefinedBehaviorSanitizer добавляет runtime-проверки некоторых классов UB:
+
+\begin{shellcode}
+g++ -std=c++17 -fsanitize=undefined \
+    -fno-sanitize-recover=undefined program.cpp -o program
+./program
+\end{shellcode}
+
+Это режим конкретного toolchain, а не часть стандарта C++. Он видит только
+проверяемые события реально пройденного пути. Отсутствие diagnostics не
+доказывает отсутствие UB во всей программе.
+
+\subsection{Эксперимент 1: course\_status}
+
+Инструмент
+\texttt{examples/02\_declarations\_flow\_and\_errors/01\_course\_status}
+read-only проверяет все 15 известных пар
+\texttt{lectures/NN\_slug.tex} $\leftrightarrow$
+\texttt{examples/NN\_slug/}. Он ищет корень курса от текущего каталога вверх,
+но ничего не создаёт, не удаляет и не переписывает.
+
+\begin{shellcode}
+cmake -S examples/02_declarations_flow_and_errors/01_course_status \
+      -B examples/02_declarations_flow_and_errors/01_course_status/build
+cmake --build examples/02_declarations_flow_and_errors/01_course_status/build
+./examples/02_declarations_flow_and_errors/01_course_status/build/course_status
+\end{shellcode}
+
+Программа хранит \texttt{running} и выбранный пункт меню. Внешний
+\texttt{while} повторяет меню, \texttt{switch} выбирает действие, а
+\texttt{for} проверяет 15 пар. Результаты двух проверок имеют тип
+\texttt{bool}; локальные блоки case
+ограничивают scope временных имён. \texttt{continue} возвращает к меню после
+плохого ввода, \texttt{break} завершает case. Штатный выход имеет status 0,
+невозможность найти корень --- 2.
+
+\begin{standardbox}[Язык и библиотека не смешиваем]
+\texttt{if}, \texttt{switch}, \texttt{while}, \texttt{for} и scope --- тема
+языка этой лекции. \texttt{std::filesystem} --- готовый library API C++17,
+которым мы спрашиваем о путях; внутреннее устройство API сейчас не изучаем.
+\end{standardbox}
+
+Правильный результат: пункты 1 и 2 сообщают реальное состояние файлов, пункт
+3 показывает только неполные пары (для утверждённой структуры их нет), буква
+вместо номера не ломает menu loop, 0 завершает программу.
+
+\subsection{Эксперимент 2: control flow и реальные diagnostics}
+
+Второй каталог блока, \texttt{02\_control\_flow\_lab}, содержит несколько
+маленьких cases вместо одного искусственного файла.
+
+\begin{shellcode}
+printf 'y\n' | \
+  examples/02_declarations_flow_and_errors/02_control_flow_lab/run_lab.sh
+\end{shellcode}
+
+Лаборатория реально проверяет три ветви \texttt{if}, границу цикла и
+short-circuit. Затем она ожидает: ненулевой exit status у демонстрации logic
+error; warning для assignment в условии; отказ компиляции при изменении
+\texttt{const}; runtime-диагностику UBSan для signed overflow. Expected failure
+--- PASS только когда log содержит именно ожидаемую причину. Полные сообщения
+конкретного установленного компилятора сохраняются в локальном
+\texttt{generated/} и не выдаются за универсальный текст стандарта.
+
+\subsection{Сильные стороны и цена свободы}
+
+C++ прямо выражает control flow, а информация о типах позволяет найти много
+ошибок до запуска. Состояние и шаги алгоритма видны в коде; стандартная
+библиотека даёт готовые абстракции вроде streams, vector и filesystem. Один
+исходник можно собирать в обычном режиме, с усиленными warnings или sanitizer.
+
+Цена этой свободы технически существенна: implicit conversions способны
+терять данные; logic errors compiler находить не обязан; некоторые неверные
+программы успешно компилируются; язык допускает UB. Поэтому программист
+отвечает за условия операций, границы циклов, progress к остановке и проверку
+диагностик.
+
+\subsection{Проверка понимания}
+
+После лекции нужно уметь без подсказки:
+
+1) отличить initialization от assignment и declaration от definition; 2) объяснить тип результата сравнения и short-circuit; 3) выбрать \texttt{if} или \texttt{switch} и обосновать порядок проверок; 4) записать validation, sentinel и menu loops; 5) назвать initialization, condition, body и iteration expression цикла; 6) найти off-by-one и сформулировать простой loop invariant; 7) отличить scope от lifetime и заметить shadowing; 8) классифицировать compile, link, runtime, logic errors и UB; 9) объяснить, почему warnings и sanitizer полезны, но не доказывают корректность; 10) написать небольшую консольную программу с корректным exit status.
+
+\subsection{Источники для сверки}
+
+Правила declarations, statements, conversions и undefined behavior сверены с
+рабочим draft C++17 N4659. Педагогический порядок условий и циклов сопоставлен
+с MIT 6.096 Lecture 2, но старый стиль примеров заменён современным явным
+\texttt{std::} и фигурными скобками. Практика warnings и стадий сборки сверена
+с \textit{An Introduction to GCC}; target-based сборка продолжает подход
+первой лекции и \textit{Modern CMake}.

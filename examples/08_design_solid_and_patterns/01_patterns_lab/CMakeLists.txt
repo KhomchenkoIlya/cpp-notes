@@ -1,0 +1,16 @@
+cmake_minimum_required(VERSION 3.16)
+project(patterns_lab LANGUAGES CXX)
+
+add_executable(patterns_lab patterns_lab.cpp)
+target_compile_features(patterns_lab PRIVATE cxx_std_17)
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    target_compile_options(patterns_lab PRIVATE -Wall -Wextra -Wpedantic)
+endif()
+
+enable_testing()
+foreach(pattern IN ITEMS strategy factory observer simple)
+    add_test(NAME ${pattern}_case COMMAND patterns_lab --case ${pattern})
+endforeach()
+add_test(NAME all_patterns COMMAND patterns_lab)
+add_test(NAME invalid_case_rejected COMMAND patterns_lab --case missing)
+set_tests_properties(invalid_case_rejected PROPERTIES WILL_FAIL TRUE)

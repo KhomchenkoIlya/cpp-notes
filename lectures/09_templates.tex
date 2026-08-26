@@ -1,0 +1,461 @@
+% Lecture 09: Templates and generic library design
+\section{Лекция 9. Templates: generic code как библиотека}
+\label{sec:lecture-09}
+
+В блоке~1 запись \texttt{std::vector<int>} читалась как «vector элементов
+int», а в блоке~3 появилась \texttt{std::array<int, 4>}. Теперь разберём
+механизм языка, благодаря которому библиотеке не нужны вручную написанные
+\texttt{vector\_int} и \texttt{vector\_string}. Главный вопрос блока:
+как один исходный алгоритм или тип сделать reusable для разных типов, не
+стирая их различия во время выполнения?
+
+\begin{importantbox}[Причинная цепочка]
+Дублирование по типам $\rightarrow$ function template $\rightarrow$
+deduction $\rightarrow$ instantiation $\rightarrow$ requirements к типу
+$\rightarrow$ class template и value parameter $\rightarrow$ маленькая
+generic library $\rightarrow$ мост к STL.
+\end{importantbox}
+
+\subsection{Design pressure: алгоритм тот же, тип другой}
+
+До templates максимум двух типов пришлось бы записать дважды:
+
+\begin{cppcode}
+int max_int(int left, int right) {
+    return left < right ? right : left;
+}
+
+double max_double(double left, double right) {
+    return left < right ? right : left;
+}
+\end{cppcode}
+
+Имена и типы различаются, но решение одно: сравнить два значения и вернуть
+большее. Исправление ошибки или изменение правила придётся повторять. Overload
+делает единое имя вызова, но тела всё ещё дублируются. Common base и virtual
+function из блока~7 здесь искусственны: \texttt{int} и \texttt{double} не
+должны становиться объектами одной hierarchy.
+
+\term{Generic programming} описывает алгоритм через необходимые операции, а
+не через один заранее выбранный concrete type. Языковой механизм templates
+позволяет compiler получить concrete entities для подходящих arguments.
+
+\subsection{Function template по частям}
+
+\begin{cppcode}
+template <typename T>
+const T& maximum(const T& left, const T& right) {
+    return left < right ? right : left;
+}
+\end{cppcode}
+
+\texttt{template <typename T>} вводит \term{template parameter} \texttt{T}:
+здесь это parameter-типа. В этом месте \texttt{class T} синтаксически тоже
+допустимо; в конспекте последовательно используем \texttt{typename}, потому
+что parameter может быть не class, а, например, \texttt{int}.
+
+Всё определение --- \term{function template declaration}. Это не одна
+обычная функция, способная runtime принимать значения «без типа». Template
+задаёт семейство возможных functions. Записи \texttt{maximum<int>} и
+\texttt{maximum<double>} называют разные \term{specializations} этого
+template с разными function types.
+
+\begin{standardbox}[Template, specialization и instantiation]
+Template --- исходное параметризованное объявление. Specialization --- entity,
+полученная для конкретных template arguments или заданная отдельно.
+Instantiation --- процесс получения specialization из template. В простом
+вызове compiler не обязан буквально копировать текст; это лишь удобная первая
+модель, а не требование к реализации или object code.
+\end{standardbox}
+
+\subsection{Template argument deduction}
+
+Обычно argument типа выводится из function arguments:
+
+\begin{cppcode}
+int a = maximum(4, 9);              // T deduced as int
+double b = maximum(2.0, 3.5);       // T deduced as double
+std::string c = maximum(std::string{"a"}, std::string{"b"});
+\end{cppcode}
+
+Это \term{template argument deduction}: compiler сопоставляет parameter types
+\texttt{const T\&} с types expressions в call и выводит \texttt{T}. Вызов не
+делает type runtime-данными; решение принимается при translation.
+
+Template argument можно указать явно:
+
+\begin{cppcode}
+double value = maximum<double>(2, 3.5);
+\end{cppcode}
+
+Здесь первый argument \texttt{int} преобразуется к явно выбранному
+\texttt{double}. Явная запись полезна, когда deduction невозможен или нужен
+осознанный target type, но очевидный argument обычно не повторяют.
+
+Если оба parameters содержат один \texttt{T}, compiler должен получить
+согласованный результат. Вызов \texttt{maximum(2, 3.5)} пытается вывести из
+первого argument \texttt{int}, а из второго \texttt{double}; простое правило
+не выбирает «лучший общий тип», и call ill-formed. Можно привести arguments к
+одному смысловому типу или явно выбрать \texttt{maximum<double>}.
+
+Это только базовая deduction. Сложные правила, \texttt{auto}, forwarding и
+class template argument deduction относятся к следующим блокам.
+
+\subsection{Instantiation: что требуется compiler}
+
+Когда program использует \texttt{maximum(4, 9)}, происходит implicit
+instantiation подходящей specialization \texttt{maximum<int>}. Использование
+со strings создаёт \texttt{maximum<std::string>}. Каждая проверяется как
+concrete typed function.
+
+Стандарт задаёт правила well-formed program и observable behavior, но не
+обещает отдельную физическую копию machine code для каждой specialization.
+Compiler/linker могут inline, объединять эквивалентный code или вообще не
+оставить callable symbol после optimization. Обратное тоже возможно: разные
+specializations дают разные инструкции и занимают место.
+
+\subsection{Requirements: generic не означает «любой тип»}
+
+Implementation \texttt{maximum} содержит \texttt{left < right}. Значит,
+выбранный \texttt{T} должен предоставлять подходящую операцию \texttt{<}, а её
+результат должен работать как condition. Это \term{requirement} алгоритма.
+
+\begin{importantbox}[Обязательная формулировка]
+Template не «принимает любой тип». Он работает с теми типами, которые
+удовлетворяют операциям, используемым implementation.
+\end{importantbox}
+
+Для следующей функции requirements другие:
+
+\begin{cppcode}
+template <typename Container, typename Value>
+std::size_t count_matching(const Container& values, const Value& wanted) {
+    std::size_t count{};
+    for (const auto& value : values) {
+        if (value == wanted) {
+            ++count;
+        }
+    }
+    return count;
+}
+\end{cppcode}
+
+\texttt{Container} должен поддерживать range-for, а его element --- сравнение
+с \texttt{Value} через \texttt{==}. Функция не требует именно vector и не
+обещает весь interface контейнера. Range-for здесь использует уже знакомую
+форму; полный iterator model будет в блоке~14.
+
+В простом C++17 interface эти requirements явно не записаны. Они проверяются
+при instantiation. Если вызвать \texttt{maximum} для \texttt{NotOrdered} без
+\texttt{operator<}, compiler укажет ошибку внутри template и цепочку вроде
+«required from here». Это compile-time error, а не runtime fallback.
+
+\subsection{Как читать template diagnostics}
+
+Длинная diagnostic часто содержит три уровня:
+1) пользовательский call, который запросил instantiation; 2) concrete template arguments, например \texttt{T = NotOrdered}; 3) первая неподходящая operation внутри definition.
+
+Формат GCC и Clang различается. Практический порядок: найти первый свой call,
+установленные template arguments и ближайшую первичную причину, а не исправлять
+все последующие сообщения. Negative tests сохраняют настоящие diagnostics в
+build-каталог, но PDF не копирует многоэкранный compiler dump.
+
+В C++20 Concepts позволяют выразить часть requirements в interface и улучшить
+диагностику. Здесь мы не вводим их синтаксис: сначала важно увидеть сам
+контракт операций.
+
+\subsection{Value, const reference и mutable reference}
+
+Templates не отменяют семантику блока~4:
+\texttt{T value} создаёт отдельный parameter object; это уместно для маленького значения или нужной копии; \texttt{const T\& value} читает существующий object без намеренной копии и подходит \texttt{maximum}; \texttt{T\& value} означает изменение caller's object.
+
+Выбор определяется contract, lifetime и cost, а не словом \texttt{template}.
+\texttt{maximum} возвращает \texttt{const T\&}; в реальной библиотеке caller
+не должен сохранять эту reference дольше выбранного argument. Для простых
+вычислений часто безопаснее вернуть \texttt{T} по value. Forwarding references
+и perfect forwarding здесь намеренно не нужны.
+
+Простой return type \texttt{T} понятен, когда operation действительно
+возвращает тот же type. Смешанное сложение разных types потребовало бы иной
+модели результата; не будем преждевременно вводить \texttt{decltype} machinery.
+
+\subsection{Class template: семейство concrete types}
+
+Если параметризуется не одна operation, а состояние вместе с interface,
+нужен class template:
+
+\begin{cppcode}
+template <typename T>
+class Box {
+public:
+    explicit Box(const T& value) : value_{value} {}
+    const T& value() const { return value_; }
+private:
+    T value_;
+};
+
+Box<int> count{9};
+Box<std::string> title{"templates"};
+\end{cppcode}
+
+\texttt{Box} --- template, а \texttt{Box<int>} и
+\texttt{Box<std::string>} --- разные concrete class types. Objects \texttt{count}
+и \texttt{title} имеют соответствующие specializations. Между
+\texttt{Box<int>} и \texttt{Box<double>} автоматически нет inheritance
+relation и implicit runtime substitutability.
+
+Methods, определённые внутри class template, используют тот же \texttt{T}.
+При внешнем definition параметр и specialization класса нужно повторить:
+
+\begin{cppcode}
+template <typename T>
+const T& Box<T>::value() const {
+    return value_;
+}
+\end{cppcode}
+
+Для коротких methods inline definition обычно читается проще.
+
+\subsection{Non-type template parameter}
+
+Template parameter может быть compile-time value:
+
+\begin{cppcode}
+template <typename T, std::size_t N>
+class FixedBuffer {
+public:
+    constexpr std::size_t size() const { return N; }
+    T& operator[](std::size_t index) { return values_[index]; }
+private:
+    std::array<T, N> values_{};
+};
+\end{cppcode}
+
+\texttt{T} --- type template parameter, \texttt{N} --- non-type template
+parameter типа \texttt{std::size\_t}. Значение \texttt{N} известно при
+translation и входит в type: \texttt{FixedBuffer<int, 3>} и
+\texttt{FixedBuffer<int, 5>} --- разные types. Это та же основная идея, что у
+знакомого \texttt{std::array<T, N>}.
+
+В учебном \texttt{FixedBuffer} \texttt{operator[]} имеет precondition
+\texttt{index < N}; runtime bounds check не добавлен. Storage принадлежит
+object через \texttt{std::array}, поэтому отдельного dynamic allocation нет.
+Это иллюстрация, а не попытка заменить production \texttt{std::array}.
+
+Class templates могут иметь default arguments, например
+\texttt{template <typename T = int> class Box}. Тогда \texttt{Box<>} выбирает
+\texttt{int}. Default полезен только при естественном частом выборе; скрывать
+важный design parameter ради короткой записи не следует.
+
+\subsection{Primary template, specialization и overloading}
+
+Обычное параметризованное определение называется \term{primary template}.
+Иногда один type требует действительно другой implementation:
+
+\begin{cppcode}
+template <typename T>
+struct ValueLabel {
+    static const char* text() { return "value"; }
+};
+
+template <>
+struct ValueLabel<bool> {
+    static const char* text() { return "logical value"; }
+};
+\end{cppcode}
+
+Вторая запись --- explicit, или full, specialization для \texttt{bool}.
+Specialization повышает coupling к concrete type, поэтому её применяют редко
+и осмысленно, когда общий contract сохраняется. Partial specialization class
+templates существует, но нужна более поздним generic designs. Function
+templates частично специализировать нельзя.
+
+Functions чаще расширяют overloading: рядом могут быть ordinary function и
+function template либо несколько templates с различимыми parameter lists.
+Overload участвует в выборе подходящей function; specialization задаёт вариант
+уже существующего template. Подробные правила выбора и SFINAE здесь не нужны.
+
+\subsection{Почему definitions templates часто находятся в headers}
+
+Для non-template function привычна схема: declaration в \texttt{.hpp}, body в
+одном \texttt{.cpp}, linker находит готовое definition. Для implicit
+instantiation compiler обычно должен видеть template definition и concrete
+arguments в точке, где specialization требуется. Одной declaration часто
+недостаточно, чтобы сгенерировать нужную specialization.
+
+Поэтому небольшие template libraries обычно помещают полные definitions в
+headers с include guard. Это не означает «template невозможно определить в
+\texttt{.cpp}». Можно управлять набором через explicit instantiation, но тогда
+нужно заранее перечислить поддержанные arguments; такой способ менее generic
+и не относится к основной модели этой лекции.
+
+Каждая translation unit может увидеть один и тот же header. ODR и toolchain
+обеспечивают корректное объединение допустимых одинаковых template entities;
+точные object symbols зависят от compiler/linker.
+
+\subsection{Compile-time и runtime polymorphism}
+
+В блоках~7--8 runtime Strategy использовала common abstract base и virtual
+call. Caller мог выбрать concrete strategy по runtime argument, а engine
+работал через base reference.
+
+Generic algorithm использует иной extension point:
+
+\begin{cppcode}
+template <typename Blocks, typename Policy, typename Reporter>
+AuditSummary run_audit(const Blocks& blocks,
+                       const Policy& policy,
+                       Reporter& reporter) {
+    AuditSummary summary;
+    for (const auto& block : blocks) {
+        const AuditResult result = policy.evaluate(block);
+        ++summary.checked;
+        if (result.passed) {
+            ++summary.passed;
+        }
+        reporter.on_result(result);
+    }
+    reporter.on_finish(summary);
+    return summary;
+}
+\end{cppcode}
+
+Concrete \texttt{Policy} и \texttt{Reporter} известны при instantiation. Им
+не нужна общая base class: достаточно \texttt{evaluate}, \texttt{on\_result}
+и \texttt{on\_finish} с подходящим смыслом. Это compile-time polymorphism.
+
+\begin{center}
+\begin{tabular}{p{0.25\textwidth}p{0.32\textwidth}p{0.32\textwidth}}
+\toprule
+ & Templates & Virtual interface \\
+\midrule
+Выбор варианта & при translation & может быть runtime \\
+Common base & не обязателен & задаёт единый interface \\
+Dispatch & concrete call, часто inline-able & обычно indirect virtual call \\
+Расширение & новая instantiation & новый subtype через base \\
+Основная цена & compile time, diagnostics, code size & interface/dispatch, lifetime design \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Ни один подход не всегда лучше. Runtime Strategy нужна, когда policy выбирают
+из config во время выполнения, хранят разнородные strategies вместе или
+подключают через stable ABI. Template policy удобна, когда concrete type
+известен при сборке, common hierarchy не несёт смысла, а operations образуют
+достаточный compile-time contract.
+
+\subsection{Cost model без лозунга zero-cost}
+
+Template abstraction не обязана добавлять runtime dispatch или хранить type
+metadata в object. Compiler видит concrete type и может inline и
+специализировать code. Это возможность оптимизации, а не гарантия «быстрее».
+
+Цена переносится и в toolchain: parsing и instantiation увеличивают compile
+time; длинные chains ухудшают diagnostics; specializations для разных types
+могут увеличить binary size. Оптимизатор может убрать или объединить часть
+code, поэтому code bloat измеряют для конкретной сборки. Benchmark и assembly
+в блоке N/A: архитектурное различие не требует выдуманного доказательства
+скорости.
+
+\subsection{Эксперимент 1: mini\_generic\_library}
+
+Практический каталог \texttt{mini\_generic\_library} содержит настоящий
+header \texttt{mini\_generic.hpp}. В нём находятся:
+\texttt{maximum<T>} с requirement \texttt{operator<}; \texttt{count\_matching<Container, Value>} с range-for и \texttt{operator==}; \texttt{FixedBuffer<T, N>} с type и non-type parameters; небольшая full specialization \texttt{ValueLabel<bool>}.
+
+Positive run использует deduced \texttt{maximum<int>}, explicit
+\texttt{maximum<double>}, \texttt{std::string} и честный project type
+\texttt{Revision} с ordering по номеру. Подсчёт проверен на
+\texttt{std::vector<int>} и \texttt{std::vector<std::string>}; buffers --- на
+двух \texttt{T} и двух \texttt{N}.
+
+\begin{shellcode}
+cd examples/09_templates/mini_generic_library
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug
+cmake --build build
+./build/mini_generic_library
+ctest --test-dir build --output-on-failure
+\end{shellcode}
+
+\begin{outputcode}
+maximum<int>=9
+maximum<double>=3.5
+maximum<string>=beta
+maximum<Revision>=9
+matching<int>=2
+matching<string>=2
+FixedBuffer<int,3>.size=3
+FixedBuffer<string,2>.size=2
+specialization<bool>=logical value
+MINI_GENERIC_LIBRARY=PASS
+\end{outputcode}
+
+CTest отдельно компилирует \texttt{negative/no\_less.cpp}. Type
+\texttt{NotOrdered} не предоставляет \texttt{<}; PASS означает ненулевой exit
+code compiler и непустую реальную diagnostic в
+\texttt{build/negative/no\_less.log}, а не поддельный текст ошибки.
+
+\subsection{Эксперимент 2: generic\_course\_audit}
+
+Второй проект read-only инспектирует настоящий набор из 15 blocks. Один
+\texttt{run\_audit} инстанцируется для \texttt{CompactReporter} и
+\texttt{DetailedReporter}. Эти classes не наследуются от общего base:
+центральному workflow нужны только названные operations. Оба reporters должны
+обработать 15 blocks и согласиться, что после этой работы complete первые 9.
+
+\begin{shellcode}
+cd examples/09_templates/generic_course_audit
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug
+cmake --build build
+./build/generic_course_audit --root ../../..
+ctest --test-dir build --output-on-failure
+\end{shellcode}
+
+\begin{outputcode}
+.........FFFFFF compact checked=15, passed=9
+...
+detailed checked=15, passed=9
+reporters agree=true
+GENERIC_COURSE_AUDIT=PASS
+\end{outputcode}
+
+Точки означают successful blocks, \texttt{F} --- будущие incomplete 10--15,
+а не сбой программы. Дополнительный negative test передаёт
+\texttt{BadReporter} без \texttt{on\_result}/\texttt{on\_finish}; compiler
+отвергает соответствующую instantiation. В отличие от runtime Strategy блока~8,
+reporter нельзя заменить неизвестным subtype во время run. Здесь это уместно:
+набор output types известен при сборке и virtual hierarchy ничего не добавила
+бы к предметному смыслу.
+
+PASS блока требует: обе CMake-конфигурации C++17, warning-clean builds, 5
+CTest cases, оба positive markers, две сохранённые negative diagnostics и
+общую сборку PDF. Sanitizers и benchmark --- N/A: практика не содержит
+memory-safety hypothesis или performance claim.
+
+\subsection{STL начинается с этой идеи}
+
+\texttt{std::vector<T>} --- class template, поэтому element type ---
+частью concrete vector type. \texttt{std::array<T, N>} дополнительно получает
+compile-time size. Generic algorithms описываются через требования к данным и
+операциям, а не копируются для каждого element type.
+
+Это только мост. Мы ещё не изучаем container taxonomy, iterator categories,
+complexity contracts и standard algorithms: они составят блок~14. Теперь их
+архитектура не будет выглядеть магией --- templates дают языковой фундамент
+для независимости container/algorithm от одного concrete element type.
+
+\subsection{Проверка понимания}
+
+Нужно уметь объяснить:
+1) какое дублирование устраняет function template; 2) различия template, specialization и instantiation; 3) что выводит deduction и почему смешанные arguments могут конфликтовать; 4) почему generic не означает «для любого типа»; 5) requirements \texttt{maximum}, \texttt{count\_matching} и \texttt{run\_audit}; 6) почему \texttt{Box<int>} и \texttt{Box<std::string>} --- разные types; 7) почему \texttt{N} в \texttt{FixedBuffer<T, N>} известен compile time; 8) зачем template definition обычно видима в месте instantiation; 9) когда выбрать template policy, а когда runtime Strategy; 10) compile-time, diagnostic и code-size costs; 11) как templates подводят к STL, не заменяя изучение её contracts.
+
+\subsection{Источники для сверки}
+
+Термины template parameters, deduction, implicit/explicit instantiation и
+explicit specialization сверены с C++17 working draft N4659, clauses
+[temp.param], [temp.deduct], [temp.inst] и [temp.expl.spec]. Базовая
+педагогическая последовательность сопоставлена с MIT 6.096 Advanced I;
+устаревший стиль источника заменён на C++17 и \texttt{std::}. Связь с
+\texttt{vector}/\texttt{array} проверена по предыдущим блокам и
+\textit{Modern C++ Tutorial}; performance claims ограничены моделью ISO C++
+Performance TR и не выданы за гарантии generated code.

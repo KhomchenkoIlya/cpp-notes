@@ -1,0 +1,713 @@
+% BLOCK12_STAGE2_MANAGED
+% Lecture 12: move semantics, value categories, forwarding and explicit casts
+\section{Лекция 12. Move-семантика и явные приведения типов}
+\label{sec:lecture-12}
+
+В лекции~\ref{sec:lecture-11} возникла странная на первый взгляд операция:
+\texttt{unique\_ptr} нельзя копировать, но его можно передать другому owner через
+\texttt{std::move}. Теперь разберём, что именно означает эта запись и почему
+C++ различает выражения не только по типу, но и по \term{value category}.
+
+Вторая половина лекции посвящена похожей design-идее: если programmer намеренно
+меняет способ интерпретации значения или типа, это намерение лучше показать
+явно. Поэтому современный C++ предпочитает специализированные casts
+\texttt{static\_cast}, \texttt{dynamic\_cast}, \texttt{const\_cast} и
+\texttt{reinterpret\_cast} вместо C-style cast.
+
+\begin{importantbox}[Сквозная идея]
+Move и C++ casts не являются «магическими действиями».
+Они меняют то, \emph{как expression участвует в type system}.
+После этого обычные constructors, overload resolution и conversion rules
+определяют реальную операцию.
+\end{importantbox}
+
+\subsection{Почему одного copy недостаточно}
+
+Представим object, который владеет большим buffer или
+\texttt{std::unique\_ptr<Resource>}. Copy должен создать независимое состояние:
+для большого buffer это может означать allocation и копирование всех элементов,
+а unique ownership вообще не допускает двух owners одного resource.
+
+Но часто старый object после передачи больше не нужен:
+
+\begin{cppcode}
+Packet packet = make_packet();
+send(/* packet больше не нужен после этого вызова */);
+\end{cppcode}
+
+Вместо глубокого copy можно \term{передать} внутренний resource новому object,
+а старый оставить в корректном, но опустошённом состоянии. Это и есть главный
+смысл move semantics.
+
+\subsection{Expression и object --- не одно и то же}
+
+Object существует в памяти в течение lifetime. Expression --- фрагмент
+программы, который вычисляется и имеет type и value category.
+
+Один и тот же object может появляться в expressions разных категорий:
+
+\begin{cppcode}
+Packet packet{"report"};
+
+inspect(packet);            // expression packet: lvalue
+inspect(std::move(packet)); // expression std::move(packet): xvalue
+\end{cppcode}
+
+Сам object \texttt{packet} не превращается в другой object. Меняется категория
+expression, через которое мы к нему обращаемся.
+
+\subsection{Карта value categories в C++17}
+
+Удобно сначала увидеть полную схему:
+
+\begin{center}
+\begin{tabularx}{\textwidth}{L{0.22\textwidth}YY}
+\toprule
+Категория & Интуиция & Обычный пример \\
+\midrule
+lvalue & glvalue с устойчивой идентичностью & named variable \\
+xvalue & glvalue, чей resource можно переиспользовать & \texttt{std::move(x)} \\
+prvalue & вычисляет значение для инициализации/result & \texttt{Packet\{"x"\}} \\
+glvalue & lvalue или xvalue; expression идентифицирует entity & \texttt{x}, \texttt{std::move(x)} \\
+rvalue & prvalue или xvalue & temporary, \texttt{std::move(x)} \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+Эта схема точнее старой фразы «lvalue стоит слева от присваивания».
+Например, const lvalue может вообще не быть допустимой левой частью assignment.
+
+\begin{standardbox}[Минимальная точная модель]
+В C++17 lvalue и xvalue относятся к glvalue; prvalue и xvalue относятся к
+rvalue. Xvalue одновременно glvalue и rvalue.
+\end{standardbox}
+
+\subsection{Lvalue}
+
+Named variable expression обычно lvalue:
+
+\begin{cppcode}
+std::string name{"block-12"};
+std::string& ref = name;
+\end{cppcode}
+
+Lvalue удобно понимать как expression, который идентифицирует уже существующий
+object/function и обычно позволяет продолжать обращаться к той же сущности.
+
+Но наличие адреса --- плохое универсальное определение lvalue: язык задаёт
+категории семантически, а не тестом «можно ли вызвать operator \&».
+
+\subsection{Prvalue}
+
+Temporary/value-producing expression часто prvalue:
+
+\begin{cppcode}
+std::string{"temporary"}
+7 + 5
+make_value()
+\end{cppcode}
+
+В C++17 prvalue тесно связан с инициализацией результата. Не нужно представлять,
+что compiler обязан сначала создать отдельный временный object, а затем
+обязательно скопировать его в destination: C++17 во многих случаях прямо
+строит result object на нужном месте.
+
+\subsection{Xvalue}
+
+\term{Xvalue} --- glvalue, обозначающий object, resource которого разрешено
+переиспользовать. Самый знакомый источник xvalue:
+
+\begin{cppcode}
+std::move(packet)
+\end{cppcode}
+
+Именно к xvalue обычно привязывается rvalue reference, позволяя выбрать move
+overload.
+
+\subsection{Rvalue references}
+
+Синтаксис:
+
+\begin{cppcode}
+Packet&& ref = Packet{"temporary"};
+\end{cppcode}
+
+\texttt{Packet\&\&} --- rvalue reference. Она может привязаться к подходящему
+rvalue. Такой parameter позволяет overload-у сказать:
+«caller предоставляет object, состояние которого можно забрать».
+
+Обычная пара:
+
+\begin{cppcode}
+void process(const Packet& packet); // borrow/read
+void process(Packet&& packet);      // можно переиспользовать resource
+\end{cppcode}
+
+Overload resolution выбирает подходящую функцию из type и value category
+argument.
+
+\subsection{Named rvalue reference --- lvalue-expression}
+
+Это один из самых важных моментов:
+
+\begin{cppcode}
+void relay(Packet&& packet) {
+    process(packet);            // packet --- named expression => lvalue
+    process(std::move(packet)); // xvalue => rvalue overload
+}
+\end{cppcode}
+
+У variable \texttt{packet} declared type содержит \texttt{\&\&}, но expression
+с её именем --- lvalue. Поэтому move не «распространяется автоматически»
+через named variables.
+
+\subsection{Что на самом деле делает \texttt{std::move}}
+
+Несмотря на имя, \texttt{std::move} сам по себе не переносит bytes и не
+обнуляет object. Концептуально он выполняет cast к подходящей rvalue-reference
+категории:
+
+\begin{cppcode}
+// Упрощённая идея, не реализация для копирования:
+static_cast<T&&>(object)
+\end{cppcode}
+
+Реальная library template учитывает reference removal. Результат
+\texttt{std::move(x)} --- xvalue. После этого overload resolution может выбрать
+move constructor или move assignment operator.
+
+\begin{whybox}[Почему после \texttt{std::move} иногда всё равно происходит copy?]
+\texttt{std::move} только меняет category expression. Если подходящей move
+operation нет, но существует copy operation, способная принять такой argument,
+compiler может выбрать copy. Поэтому фраза «std::move перемещает» технически
+неточна.
+\end{whybox}
+
+\subsection{Move constructor}
+
+Обычная форма:
+
+\begin{cppcode}
+class Packet {
+public:
+    Packet(Packet&& other) noexcept
+        : data_{std::move(other.data_)} {}
+};
+\end{cppcode}
+
+Новый Packet создаётся из rvalue другого Packet. Для unique-owned resource
+move constructor обычно передаёт ownership member-у нового object.
+
+Если member --- \texttt{unique\_ptr}, его собственная move operation делает
+source smart pointer пустым.
+
+\subsection{Move assignment}
+
+Move assignment работает с \emph{уже существующим} destination:
+
+\begin{cppcode}
+Packet& operator=(Packet&& other) noexcept {
+    if (this != &other) {
+        data_ = std::move(other.data_);
+    }
+    return *this;
+}
+\end{cppcode}
+
+Как и в copy semantics из блока 06:
+
+\begin{cppcode}
+Packet b = std::move(a); // construction
+b = std::move(c);        // assignment
+\end{cppcode}
+
+--- это разные операции.
+
+Self-move нужно учитывать в contract конкретного type. Не следует строить
+общую программу на предположении, что после \texttt{x = std::move(x)} состояние
+обязательно сохраняется прежним.
+
+\subsection{Moved-from object}
+
+После move source object продолжает существовать, пока не закончился его
+lifetime. Но его состояние определяется contract типа.
+
+Для многих standard-library types после move гарантируется состояние
+\emph{valid but unspecified}: invariants сохранены, destructor и операции,
+не требующие конкретного старого значения, допустимы, но прежнее содержимое
+предполагать нельзя.
+
+\begin{warningbox}[Не универсальное правило «после move всегда пусто»]
+\texttt{unique\_ptr} после move действительно становится empty по своему
+contract. Для произвольного \texttt{std::string} нельзя переносимо строить
+логику на том, что \texttt{empty()} обязательно true после move.
+\end{warningbox}
+
+Для собственного \texttt{Packet} мы вправе определить более сильный contract:
+например, moved-from packet становится пустым и может быть заново присвоен.
+
+\subsection{Rule of Five}
+
+В блоке 06 был Rule of Three. После появления move operations design-guideline
+расширяется до \term{Rule of Five}: если class вручную определяет resource
+semantics и вынужден писать один из
+destructor; copy constructor; copy assignment; move constructor; move assignment.
+нужно осознанно рассмотреть все пять.
+
+Это не требование синтаксиса C++.
+
+\subsection{Rule of Zero по-прежнему лучше}
+
+Современный class часто не должен писать ни одну из пяти operations вручную.
+Если members сами корректно управляют lifetime, compiler-generated special
+members могут быть правильным решением.
+
+Например, class с \texttt{std::string} и \texttt{std::vector} обычно получает
+правильную copy/move semantics из своих members.
+
+Class с \texttt{unique\_ptr} автоматически не становится copyable, но при
+подходящих условиях может получить move operations. Не добавляйте ручной move
+constructor только ради демонстрации синтаксиса в production code.
+
+\subsection{Почему \texttt{noexcept} важен для move}
+
+Move operation resource-owning type часто может просто передать handles и не
+требует операций, способных бросить exception. Тогда её можно объявить
+\texttt{noexcept}.
+
+Standard containers при перераспределении storage должны соблюдать свои
+exception-safety contracts. Для copyable type они могут предпочесть copy вместо
+potentially-throwing move, если это помогает сохранить guarantee.
+
+\begin{performancebox}[Не превращаем это в миф]
+Нельзя утверждать «vector всегда вызывает move при reallocation».
+Выбор зависит от properties element type и требований операции. Поэтому
+\texttt{noexcept} move важен не только как документация, но и как информация,
+которую library algorithm может использовать.
+\end{performancebox}
+
+\subsection{Copy elision и RVO}
+
+Move semantics не означает, что каждый return object проходит через move
+constructor.
+
+В C++17:
+
+\begin{cppcode}
+Packet make_packet() {
+    return Packet{"audit"};
+}
+
+Packet packet = make_packet();
+\end{cppcode}
+
+в соответствующем prvalue case result строится непосредственно как destination;
+отдельный copy/move constructor для промежуточного temporary не требуется.
+
+\term{NRVO} для named local:
+
+\begin{cppcode}
+Packet make_packet() {
+    Packet result{"audit"};
+    return result;
+}
+\end{cppcode}
+
+--- разрешённая optimization, но не тем же самым обязательным случаем.
+
+\begin{mistakebox}[Не писать \texttt{return std::move(local)} автоматически]
+Принудительный \texttt{std::move} named local в return может помешать NRVO.
+Обычный \texttt{return local;} чаще выражает намерение правильнее: language
+rules уже умеют использовать copy elision/move там, где это предусмотрено.
+\end{mistakebox}
+
+\subsection{Move-only types как API contract}
+
+\texttt{unique\_ptr} --- классический move-only type. Собственный object также
+может быть move-only:
+
+\begin{cppcode}
+class Packet {
+public:
+    Packet(const Packet&) = delete;
+    Packet& operator=(const Packet&) = delete;
+
+    Packet(Packet&&) noexcept = default;
+    Packet& operator=(Packet&&) noexcept = default;
+};
+\end{cppcode}
+
+Это сообщает: два независимых copies не имеют смысла, зато ownership/state
+можно передать.
+
+В эксперименте \texttt{move\_ownership\_pipeline} этот contract проверяется
+реальными compile-failure cases.
+
+\subsection{Forwarding reference}
+
+После templates из блока 09 можно понять ещё один случай \texttt{T\&\&}.
+Если \texttt{T} --- deduced template parameter в форме:
+
+\begin{cppcode}
+template <typename T>
+void relay(T&& value);
+\end{cppcode}
+
+то это \term{forwarding reference}. Она способна принять и lvalue, и rvalue.
+При lvalue-вызове deduction и reference-collapsing rules сохраняют информацию,
+что source был lvalue.
+
+Не каждый \texttt{\&\&} --- forwarding reference:
+\texttt{Packet\&\&} без deduction --- обычная rvalue reference, как и
+\texttt{const T\&\&} в template.
+
+\subsection{Reference collapsing}
+
+Для forwarding достаточно запомнить таблицу:
+
+\begin{center}
+\begin{tabular}{ll}
+\toprule
+Комбинация & Результат \\
+\midrule
+\texttt{T\& \&} & \texttt{T\&} \\
+\texttt{T\& \&\&} & \texttt{T\&} \\
+\texttt{T\&\& \&} & \texttt{T\&} \\
+\texttt{T\&\& \&\&} & \texttt{T\&\&} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Практический смысл: наличие lvalue-reference на любом этапе «побеждает»,
+поэтому forwarding template может сохранить исходную category.
+
+\subsection{\texttt{std::forward}}
+
+Named parameter \texttt{value} внутри relay всё равно
+lvalue-expression. Простая передача потеряет rvalue category:
+
+\begin{cppcode}
+template <typename T>
+void bad_relay(T&& value) {
+    process(value); // всегда named expression => lvalue
+}
+\end{cppcode}
+
+\texttt{std::forward<T>} восстанавливает category, которую template получил от
+caller:
+
+\begin{cppcode}
+template <typename T>
+void relay(T&& value) {
+    process(std::forward<T>(value));
+}
+\end{cppcode}
+
+Это основа \term{perfect forwarding}: intermediate generic layer не должен
+без причины превращать rvalue в lvalue или наоборот.
+
+\begin{warningbox}[Move и forward решают разные задачи]
+\texttt{std::move(x)} безусловно выражает «дальше x можно рассматривать как
+источник для move». \texttt{std::forward<T>(x)} условно сохраняет category,
+deduced от caller. Не заменяйте один инструмент другим механически.
+\end{warningbox}
+
+\subsection{Move как cast: мост ко второй половине лекции}
+
+Теперь видно, почему тема casts естественно следует за move.
+\texttt{std::move} не выполняет resource transfer сам: его роль близка к
+явному преобразованию value category. Реальный transfer делает выбранная
+special member function.
+
+В C++ есть и другие случаи, когда programmer явно говорит compiler:
+«эту conversion я намеренно разрешаю». Для разных смыслов язык предоставляет
+разные casts.
+
+\subsection{Implicit conversion или явный cast?}
+
+Implicit conversion хороша, когда преобразование естественно и contract
+очевиден:
+
+\begin{cppcode}
+double value = 42; // int -> double
+\end{cppcode}
+
+Если conversion может терять информацию или её смысл важен для читателя,
+явность полезна:
+
+\begin{cppcode}
+double value = 7.9;
+int truncated = static_cast<int>(value);
+\end{cppcode}
+
+Cast не делает conversion автоматически безопасной. Он лишь явно фиксирует
+намерение применить конкретные conversion rules.
+
+\subsection{\texttt{static\_cast}}
+
+\texttt{static\_cast<T>(expression)} выполняет набор conversions, которые
+compiler может проверить на основе static types.
+
+Обычные применения:
+числовое преобразование, которое хотим отметить явно; conversion enum к integer и обратно при понимании диапазонов; некоторые conversions внутри class hierarchy, если correctness уже доказана другой логикой; получение обратно typed pointer из подходящего \texttt{void*}.
+
+\begin{cppcode}
+double ratio = 7.9;
+int whole = static_cast<int>(ratio);
+
+Severity severity = Severity::warning;
+int code = static_cast<int>(severity);
+\end{cppcode}
+
+\begin{warningbox}[Явный cast не проверяет диапазон за вас]
+Например, floating-to-integer conversion имеет собственные ограничения
+representability. \texttt{static\_cast<int>(x)} не означает
+«безопасно зажать x в диапазон int». Range policy нужно проектировать отдельно.
+\end{warningbox}
+
+\subsection{Static downcast и его предел}
+
+Если \texttt{Derived} наследуется от \texttt{Base}, compiler может разрешить
+определённый \texttt{static\_cast<Derived*>} из base pointer. Но такой cast не
+проверяет dynamic type object во время выполнения.
+
+Поэтому использовать static downcast можно только когда program logic уже
+гарантирует concrete type. Для runtime-проверяемого polymorphic downcast нужен
+\texttt{dynamic\_cast}.
+
+\subsection{\texttt{dynamic\_cast}}
+
+\texttt{dynamic\_cast} работает с polymorphic hierarchy и использует runtime
+type information для проверяемого downcast/cross-cast.
+
+Pointer form:
+
+\begin{cppcode}
+Report* base = find_report();
+
+if (auto* lecture = dynamic_cast<LectureReport*>(base)) {
+    lecture->print_lines();
+}
+\end{cppcode}
+
+Если object не подходит target type, pointer result равен
+\texttt{nullptr}.
+
+Reference form:
+
+\begin{cppcode}
+try {
+    LectureReport& lecture = dynamic_cast<LectureReport&>(report);
+} catch (const std::bad_cast&) {
+    // dynamic type не подходит
+}
+\end{cppcode}
+
+При неудаче reference cast бросает \texttt{std::bad\_cast}.
+
+\subsection{Когда base должен быть polymorphic}
+
+Для runtime downcast source type должен удовлетворять требованиям
+\texttt{dynamic\_cast}; обычный случай --- polymorphic base, имеющий хотя бы
+одну virtual function.
+
+Эксперимент содержит real compile-failure, где programmer пытается выполнить
+dynamic downcast из non-polymorphic base.
+
+\subsection{Нужен ли cast для обычного upcast?}
+
+Нет. Derived pointer/reference обычно неявно преобразуется к доступному base
+pointer/reference:
+
+\begin{cppcode}
+LectureReport lecture;
+Report& report = lecture; // нормальный upcast
+\end{cppcode}
+
+Добавлять \texttt{dynamic\_cast<Report\&>(lecture)} только ради «явности»
+не нужно: cast должен решать проблему, а не украшать код.
+
+\subsection{\texttt{const\_cast}}
+
+\texttt{const\_cast} меняет cv-qualification там, где language rules это
+разрешают. Главный учебный случай --- различить:
+1) view const, но underlying object на самом деле mutable; 2) underlying object изначально создан как const.
+
+Первый случай:
+
+\begin{cppcode}
+int counter = 5;
+const int* view = &counter;
+
+int* mutable_view = const_cast<int*>(view);
+*mutable_view = 7; // underlying object counter не const
+\end{cppcode}
+
+Второй:
+
+\begin{cppcode}
+const int limit = 10;
+int* p = const_cast<int*>(&limit);
+// *p = 11; // Undefined behavior: настоящий object const
+\end{cppcode}
+
+\begin{ubbox}[Cast не отменяет constness самого object]
+\texttt{const\_cast} может дать type без const, но если original object
+действительно const, попытка изменить его через такой access приводит к
+undefined behavior.
+\end{ubbox}
+
+Практически \texttt{const\_cast} часто появляется при interop со старым API.
+В нормальном собственном interface лучше сразу правильно описать const contract.
+
+\subsection{\texttt{reinterpret\_cast}}
+
+\texttt{reinterpret\_cast} предназначен для низкоуровневых conversions, где
+programmer явно работает с representation/pointer mapping.
+
+Пример эксперимента делает только контролируемый pointer--integer round trip:
+
+\begin{cppcode}
+int value = 42;
+int* pointer = &value;
+
+std::uintptr_t bits =
+    reinterpret_cast<std::uintptr_t>(pointer);
+int* restored =
+    reinterpret_cast<int*>(bits);
+\end{cppcode}
+
+На implementation, предоставляющей \texttt{std::uintptr\_t}, этот integer type
+способен хранить преобразованное object pointer representation. Mapping в
+integer implementation-defined; превращать число в переносимый «адрес в
+формате стандарта» нельзя.
+
+\begin{warningbox}[reinterpret не создаёт object другого типа]
+Получить pointer другого type и сразу разыменовать его --- совсем другой вопрос:
+вступают в силу lifetime и aliasing rules. \texttt{reinterpret\_cast} не делает
+такой доступ автоматически корректным.
+\end{warningbox}
+
+\subsection{C-style cast скрывает намерение}
+
+Запись:
+
+\begin{cppcode}
+Target value = (Target)source;
+\end{cppcode}
+
+может использовать несколько разных C++ conversion mechanisms. Читателю
+сложнее понять, что именно programmer хотел разрешить, а поиск опасных
+low-level conversions становится труднее.
+
+Например, C-style pointer cast способен одновременно убрать const qualification
+в коде, который не прошёл бы как обычная implicit conversion.
+
+Поэтому production-style курса:
+сначала попытаться обойтись без cast; если cast действительно нужен --- выбрать самый узкий named C++ cast; C-style casts оставлять для чтения legacy/C-oriented code, а не как основной стиль C++.
+
+\subsection{Четыре casts рядом}
+
+\begin{center}
+\begin{tabularx}{\textwidth}{L{0.22\textwidth}YY}
+\toprule
+Cast & Главный смысл & Проверка/риск \\
+\midrule
+\texttt{static\_cast} & compile-time known conversion & не доказывает runtime dynamic type \\
+\texttt{dynamic\_cast} & checked polymorphic cast & runtime check; pointer null/reference exception \\
+\texttt{const\_cast} & изменить cv-qualification & mutation настоящего const object может быть UB \\
+\texttt{reinterpret\_cast} & low-level reinterpretation/mapping & lifetime, aliasing, portability \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\subsection{Cast не должен маскировать design problem}
+
+Если code постоянно делает \texttt{dynamic\_cast} по длинной цепочке concrete
+types, возможно, common virtual interface спроектирован слишком слабо.
+
+Если code постоянно использует \texttt{const\_cast}, возможно, constness API
+описана неверно.
+
+Если application logic построена на \texttt{reinterpret\_cast}, нужно проверить,
+не скрывается ли за этим неподходящее representation или нарушение ownership.
+
+Cast --- точечный инструмент, не замена хорошему type design.
+
+\subsection{Эксперимент 1: move\_ownership\_pipeline}
+
+Каталог:
+\filepath{examples/12\_move\_semantics\_and\_casts/01\_move\_ownership\_pipeline}.
+
+Move-only \texttt{Packet} владеет payload через \texttt{unique\_ptr}. Lab
+проверяет:
+1) copy construction и copy assignment запрещены; 2) move construction передаёт resource и оставляет source empty по contract именно этого Packet; 3) move assignment делает то же для уже существующего destination; 4) named variable выбирает lvalue overload, temporary и \texttt{std::move} --- rvalue overload; 5) named rvalue-reference variable снова lvalue-expression; 6) forwarding function с \texttt{std::forward} сохраняет category; 7) prvalue return в C++17 не требует промежуточного move в проверяемом case.
+
+\begin{shellcode}
+cd examples/12_move_semantics_and_casts/01_move_ownership_pipeline
+./run_checks.sh
+\end{shellcode}
+
+Два negative compile cases подтверждают отдельно:
+copy move-only Packet запрещён, а const \texttt{unique\_ptr} нельзя передать
+обычным move construction, потому что его resource нельзя забрать из const
+owner.
+
+\subsection{Эксперимент 2: casts\_lab}
+
+Каталог:
+\filepath{examples/12\_move\_semantics\_and\_casts/02\_casts\_lab}.
+
+Positive executable проверяет:
+явную numeric conversion через \texttt{static\_cast}; успешный и неуспешный pointer \texttt{dynamic\_cast}; exception от reference \texttt{dynamic\_cast}; безопасную mutation через \texttt{const\_cast}, когда original object действительно non-const; pointer--integer round trip через \texttt{reinterpret\_cast} на текущей implementation.
+
+Два negative compile cases проверяют const access и попытку runtime downcast из
+non-polymorphic base. Ещё один compile-only case показывает, что C-style cast
+способен убрать const в source code --- программа его только компилирует и
+\emph{не выполняет опасную запись}.
+
+\begin{shellcode}
+cd examples/12_move_semantics_and_casts/02_casts_lab
+./run_checks.sh
+\end{shellcode}
+
+\subsection{Стоимость}
+
+Move часто превращает глубокое копирование resource в перенос нескольких
+handles/pointers, но это свойство конкретного type. Для small trivially copied
+value move может не давать выигрыша вообще.
+
+\texttt{static\_cast} и \texttt{const\_cast} как языковые conversions сами по
+себе не означают обязательный runtime dispatch.
+\texttt{dynamic\_cast} для down/cross cast требует runtime type check и может
+иметь ненулевую стоимость.
+\texttt{reinterpret\_cast} тоже не «дорогая функция», но его
+семантическая цена --- portability и риск нарушить низкоуровневые правила.
+
+\begin{performancebox}[Сначала корректная semantics]
+Главный вопрос блока не «что быстрее: copy или move?» и не «какой cast быстрее?».
+Сначала нужен корректный ownership/type contract. Измерение имеет смысл только
+после того, как обе сравниваемые реализации решают одну задачу корректно.
+Поэтому отдельный benchmark в блоке не нужен.
+\end{performancebox}
+
+\subsection{Итоговая схема API}
+
+Передача аргумента:
+\texttt{const T\&} --- borrow read-only object; \texttt{T\&} --- borrow mutable object; \texttt{T} by value --- функция получает своё value; caller может copy или move в него; \texttt{T\&\&} --- конкретный API принимает rvalue и может переиспользовать состояние; \texttt{T\&\&} с deduced template parameter --- forwarding reference, если выполнены соответствующие условия.
+
+Явная conversion:
+сначала проверить, нельзя ли написать interface без cast; \texttt{static\_cast} --- обычная compile-time conversion; \texttt{dynamic\_cast} --- runtime-checked polymorphic conversion; \texttt{const\_cast} --- узкая работа с cv-qualification; \texttt{reinterpret\_cast} --- низкоуровневая boundary.
+
+\begin{importantbox}[Главный вывод]
+\texttt{std::move} не перемещает object: он разрешает рассматривать expression
+как источник для move. Реальное изменение состояния выполняет выбранная
+operation типа. Точно так же named C++ casts не «делают всё безопасным», а
+выражают конкретное намерение conversion и позволяют отдельно рассуждать о его
+preconditions.
+\end{importantbox}
+
+В следующем блоке мы разберём type deduction, \texttt{auto}, \texttt{decltype},
+structured bindings, CTAD, lambdas, \texttt{std::function} и
+\texttt{std::optional}. Они используют уже построенную здесь модель expressions,
+types и value categories.

@@ -1,0 +1,862 @@
+% BLOCK13_STAGE2_MANAGED
+% Lecture 13: type deduction, lambdas, std::function and std::optional
+\section{Лекция 13. Вывод типов, лямбды и вызываемые объекты}
+\label{sec:lecture-13}
+
+В предыдущих блоках мы всё чаще встречали длинные типы:
+\texttt{std::unique\_ptr<Product>}, iterator types, template arguments и callable
+objects. Современный C++ позволяет не дублировать тип там, где compiler уже
+может его вывести. Но \texttt{auto} не означает «динамический тип», а lambda
+не «анонимная функция» в смысле обычного function pointer.
+
+В этой лекции мы строим прикладную линию:
+\[
+\text{type deduction}
+\rightarrow
+\text{lambda}
+\rightarrow
+\text{callable API}
+\rightarrow
+\texttt{std::function}
+\rightarrow
+\texttt{std::optional}.
+\]
+
+Итоговый design-вопрос звучит так: как написать API, который принимает
+поведение и возвращает отсутствие результата без magic values, оставаясь
+понятным по типам?
+
+\begin{importantbox}[Сквозная идея]
+Вывод типа убирает повторение, но не отменяет type system. Lambda создаёт object
+уникального closure type. \texttt{std::function} стирает конкретный callable
+type ради единого runtime-интерфейса. \texttt{std::optional<T>} выражает
+«либо T, либо отсутствует значение».
+\end{importantbox}
+
+\subsection{\texttt{auto}: compiler выводит тип из initializer}
+
+Простейший пример:
+
+\begin{cppcode}
+auto count = 42;
+auto ratio = 0.5;
+auto name = std::string{"C++"};
+\end{cppcode}
+
+Здесь types соответственно выводятся из initializer. После deduction variable
+имеет обычный статический C++ type. Никакой runtime-перемены типа не появляется.
+
+\begin{whybox}[Зачем использовать auto, если тип и так известен?]
+Главная польза не в экономии символов, а в устранении дублирования. Если
+expression уже точно задаёт тип, повторять его слева иногда только создаёт место
+для рассинхронизации.
+\end{whybox}
+
+Например:
+
+\begin{cppcode}
+std::vector<std::string> names{"Ada", "Bjarne"};
+auto it = names.begin();
+\end{cppcode}
+
+Тип iterator может быть длинным и зависит от container. \texttt{auto} сохраняет
+важную информацию: \texttt{it} имеет именно тот type, который возвращает
+\texttt{begin()}.
+
+\subsection{Что \texttt{auto} делает с references и const}
+
+Обычный \texttt{auto} deduction во многом похож на template type deduction.
+
+\begin{cppcode}
+const int value = 10;
+const int& ref = value;
+
+auto a = ref;        // int
+const auto b = ref;  // const int
+const auto& c = ref; // const int&
+\end{cppcode}
+
+Top-level const/reference у initializer не обязательно сохраняются простым
+\texttt{auto}. Если semantics требует reference, нужно написать
+\texttt{auto\&} или \texttt{const auto\&} явно.
+
+\begin{warningbox}[Auto не должен скрывать ownership или lifetime]
+Если функция возвращает reference, запись \texttt{auto x = f();} может создать
+copy вместо alias. Если нужен borrow, пишите \texttt{auto\&} или
+\texttt{const auto\&} и проверяйте lifetime.
+\end{warningbox}
+
+\subsection{\texttt{auto\&}, \texttt{const auto\&}, \texttt{auto\&\&}}
+
+Практическая таблица:
+
+\begin{center}
+\begin{tabularx}{\textwidth}{L{0.22\textwidth}YY}
+\toprule
+Форма & Идея & Обычный смысл \\
+\midrule
+\texttt{auto x} & новое value & copy/move result \\
+\texttt{auto\& x} & mutable borrow & изменить существующий object \\
+\texttt{const auto\& x} & read-only borrow & избежать copy \\
+\texttt{auto\&\& x} & deduction с value category & generic/forwarding context \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+После блока~\ref{sec:lecture-12} последняя строка уже не выглядит магией:
+\texttt{auto\&\&} следует deduction и reference-collapsing rules.
+
+\subsection{\texttt{decltype}: type expression без вычисления}
+
+\texttt{decltype(expression)} позволяет получить type по правилам языка, не
+выполняя expression ради side effects.
+
+\begin{cppcode}
+int value = 7;
+decltype(value) copy = 9;   // int
+decltype((value)) alias = value; // int&
+\end{cppcode}
+
+Разница двойных скобок принципиальна. Для unparenthesized id-expression
+\texttt{decltype(name)} обычно даёт declared type entity. Для общего expression
+результат зависит от value category:
+lvalue expression $\rightarrow$ \texttt{T\&}; xvalue expression $\rightarrow$ \texttt{T\&\&}; prvalue expression $\rightarrow$ \texttt{T}.
+
+\begin{mistakebox}[Скобки вокруг имени меняют результат]
+\texttt{decltype(x)} и \texttt{decltype((x))} могут быть разными types.
+Вторая запись рассматривает \texttt{(x)} как обычное expression и учитывает его
+value category.
+\end{mistakebox}
+
+\subsection{\texttt{decltype(auto)}}
+
+Return type \texttt{decltype(auto)} применяет правила \texttt{decltype} к
+return expression:
+
+\begin{cppcode}
+decltype(auto) at(std::vector<int>& values, std::size_t i) {
+    return (values[i]);
+}
+\end{cppcode}
+
+Скобки здесь намеренно сохраняют reference. Это мощный, но опасный инструмент:
+если вернуть reference на object с закончившимся lifetime, deduction не спасёт.
+
+Для простого API явный return type часто читабельнее.
+
+\subsection{Trailing return type}
+
+Иногда return type зависит от parameters:
+
+\begin{cppcode}
+template <typename A, typename B>
+auto add(const A& a, const B& b) -> decltype(a + b) {
+    return a + b;
+}
+\end{cppcode}
+
+В C++14+ многие функции могут просто использовать deduced \texttt{auto} return
+type, но trailing form остаётся полезной, когда return type нужно явно выразить
+через parameter expressions.
+
+\subsection{Structured bindings}
+
+C++17 позволяет разложить tuple-like object или подходящую structure:
+
+\begin{cppcode}
+std::map<std::string, int> scores{
+    {"templates", 9},
+    {"move", 10}
+};
+
+for (const auto& [topic, score] : scores) {
+    std::cout << topic << ": " << score << '\n';
+}
+\end{cppcode}
+
+Имена \texttt{topic} и \texttt{score} связываются с компонентами элемента.
+Важно выбрать форму binding:
+\texttt{auto [a,b]} и \texttt{auto\& [a,b]} имеют разные copy/reference
+semantics.
+
+\begin{warningbox}[Не забывайте \& в range-for]
+Если нужно изменять members элемента container, простое
+\texttt{auto [key, value]} может работать с отдельным binding object/copy,
+а \texttt{auto\& [key, value]} выражает работу с самим элементом там, где это
+разрешено типом.
+\end{warningbox}
+
+\subsection{CTAD: class template argument deduction}
+
+До C++17 template arguments class часто писали явно:
+
+\begin{cppcode}
+std::pair<std::string, int> item{"templates", 9};
+\end{cppcode}
+
+В C++17:
+
+\begin{cppcode}
+std::pair item{std::string{"templates"}, 9};
+\end{cppcode}
+
+Compiler использует deduction guides и constructors, чтобы вывести template
+arguments. Это называется \term{CTAD}.
+
+\begin{standardbox}[CTAD не делает class template «нетипизированным»]
+После deduction объект всё равно имеет конкретный specialization, например
+\texttt{std::pair<std::string, int>}. Deduction происходит на этапе
+компиляции.
+\end{standardbox}
+
+Для user-defined class templates compiler может использовать implicit deduction
+guides, а programmer при необходимости может объявлять свои. В этом блоке
+достаточно понимать сам механизм; сложные guides оставим библиотечному design.
+
+\subsection{Callable object: общий термин}
+
+В C++ «что-то можно вызвать» не означает только обычную функцию. Callable может
+быть:
+function; function pointer; class object с \texttt{operator()}; lambda closure object; wrapper вроде \texttt{std::function}.
+
+Templates особенно хорошо работают с callables, потому что конкретный type
+известен compiler.
+
+\subsection{Function object}
+
+До lambda поведение часто упаковывали в class:
+
+\begin{cppcode}
+struct Threshold {
+    int limit;
+
+    bool operator()(int value) const {
+        return value >= limit;
+    }
+};
+\end{cppcode}
+
+Это обычный object со state и member function \texttt{operator()}. Lambda
+делает такой локальный pattern намного компактнее.
+
+\subsection{Минимальная lambda}
+
+\begin{cppcode}
+auto is_even = [](int value) {
+    return value % 2 == 0;
+};
+
+bool result = is_even(42);
+\end{cppcode}
+
+Синтаксис:
+1) \texttt{[]} --- capture list; 2) \texttt{(int value)} --- parameters; 3) optional specifiers; 4) body в фигурных скобках.
+
+\subsection{Что создаёт compiler}
+
+Каждая lambda expression создаёт prvalue уникального unnamed
+\term{closure type}. Концептуально можно представить:
+
+\begin{cppcode}
+class SomeUniqueClosure {
+public:
+    bool operator()(int value) const {
+        return value % 2 == 0;
+    }
+};
+\end{cppcode}
+
+Это не буквальный required layout и не имя, которым можно воспользоваться.
+Модель нужна, чтобы понять:
+lambda variable --- object, его можно копировать/перемещать согласно свойствам
+closure type, а вызов похож на вызов \texttt{operator()}.
+
+\subsection{Capture by value}
+
+\begin{cppcode}
+int threshold = 10;
+
+auto enough = [threshold](int value) {
+    return value >= threshold;
+};
+\end{cppcode}
+
+Closure хранит захваченное значение. Дальнейшее изменение внешнего
+\texttt{threshold} не обязано менять сохранённую copy.
+
+Value capture особенно удобен, когда callback должен пережить локальную
+variable, а захваченный object сам безопасно копируется.
+
+\subsection{Capture by reference}
+
+\begin{cppcode}
+int accepted = 0;
+
+auto count = [&accepted](int value) {
+    if (value > 0) {
+        ++accepted;
+    }
+};
+\end{cppcode}
+
+Closure хранит возможность обратиться к внешнему object, но не продлевает его
+lifetime.
+
+\begin{warningbox}[Reference capture --- borrowing contract]
+Если lambda сохраняется дольше захваченной local variable, последующий вызов
+может обратиться к object после окончания lifetime. Это тот же класс проблемы,
+что dangling reference/pointer.
+\end{warningbox}
+
+Поэтому callback registry, который хранит lambda, требует особенно внимательно
+читать capture list.
+
+\subsection{Default capture}
+
+\texttt{[=]} задаёт default capture by value, \texttt{[\&]} --- by reference.
+
+Коротко, но большие default captures могут скрывать реальные зависимости.
+В callback, который живёт долго, explicit capture list часто лучше:
+
+\begin{cppcode}
+auto callback = [prefix, &counter](const std::string& value) {
+    ++counter;
+    std::cout << prefix << value << '\n';
+};
+\end{cppcode}
+
+По коду видно, что именно closure хранит/заимствует.
+
+\subsection{\texttt{mutable} lambda}
+
+По умолчанию call operator non-mutable lambda, которая захватывает by value,
+const относительно сохранённого state.
+
+\begin{cppcode}
+auto next = [counter = 0]() mutable {
+    return ++counter;
+};
+\end{cppcode}
+
+\texttt{mutable} разрешает изменять copy внутри closure. Внешний object, если он
+вообще существовал отдельно, этим не изменяется.
+
+\subsection{Init-capture}
+
+C++14 добавил возможность создать capture прямо в списке:
+
+\begin{cppcode}
+auto callback =
+    [name = std::string{"audit"}]() {
+        return name.size();
+    };
+\end{cppcode}
+
+Это удобно для rename, conversion и move-capture:
+
+\begin{cppcode}
+auto owner = std::make_unique<Job>();
+
+auto task =
+    [job = std::move(owner)]() {
+        job->run();
+    };
+\end{cppcode}
+
+После такого capture closure может стать move-only, потому что содержит
+\texttt{unique\_ptr}. Это важно для \texttt{std::function} в C++17:
+он требует CopyConstructible target.
+
+\subsection{Generic lambda}
+
+C++14 разрешает \texttt{auto} в lambda parameters:
+
+\begin{cppcode}
+auto greater = [](const auto& a, const auto& b) {
+    return a > b;
+};
+\end{cppcode}
+
+Концептуально call operator closure --- function template. Один closure
+object может работать с несколькими types, если body корректен для каждого
+instantiation.
+
+Это естественное продолжение templates из блока~\ref{sec:lecture-09}.
+
+\subsection{Lambda return type}
+
+Часто return type выводится:
+
+\begin{cppcode}
+auto square = [](int x) {
+    return x * x;
+};
+\end{cppcode}
+
+Если нужна явность:
+
+\begin{cppcode}
+auto parse = [](const std::string& text) -> std::optional<int> {
+    // ...
+};
+\end{cppcode}
+
+Return expressions должны удовлетворять правилам deduction. Если branches
+возвращают несовместимые types, compiler сообщит ошибку.
+
+\subsection{Lambdas и algorithms}
+
+Следующий блок подробно разберёт STL algorithms. Уже сейчас видно главное
+применение:
+
+\begin{cppcode}
+auto it = std::find_if(
+    blocks.begin(),
+    blocks.end(),
+    [](const CourseBlock& block) {
+        return block.ready;
+    }
+);
+\end{cppcode}
+
+Algorithm отвечает за traversal, lambda --- только за policy/condition.
+Это пример разделения механизма и поведения без class hierarchy.
+
+\subsection{Когда template callable лучше}
+
+Generic function:
+
+\begin{cppcode}
+template <typename Predicate>
+bool any_match(const std::vector<CourseBlock>& blocks,
+               Predicate predicate);
+\end{cppcode}
+
+получает concrete callable type в каждом instantiation. Compiler может inline
+call и оптимизировать через границу callback.
+
+Плюсы:
+нет обязательного type-erasure wrapper; callable может быть move-only; concrete type доступен compiler.
+
+Минусы:
+implementation обычно должна быть видна в header; разные callable types создают разные instantiations; heterogeneous callbacks нельзя просто хранить в одном \texttt{std::vector<Predicate>}.
+
+\subsection{\texttt{std::function}: единый runtime callable type}
+
+\texttt{std::function<R(Args...)>} из \headerfile{functional} может хранить
+разные callable objects с совместимой сигнатурой:
+
+\begin{cppcode}
+std::function<void(const Event&)> callback;
+
+callback = free_function;
+callback = SomeFunctor{};
+callback = [prefix](const Event& event) {
+    std::cout << prefix << event.name;
+};
+\end{cppcode}
+
+Внешний type один и тот же, хотя внутренний callable type различается. Это
+\term{type erasure}.
+
+\subsection{Зачем нужна type erasure}
+
+Представим registry:
+
+\begin{cppcode}
+using Callback = std::function<void(const Event&)>;
+
+std::vector<Callback> callbacks;
+\end{cppcode}
+
+Теперь callbacks можно выбирать во время выполнения и хранить в одном
+container. Template parameter одного compile-time call site этого сам по себе
+не даёт.
+
+Именно runtime heterogeneity --- основное основание для
+\texttt{std::function}, а не желание «завернуть любую lambda».
+
+\subsection{Стоимость \texttt{std::function}}
+
+Стандарт задаёт semantics, но не требует конкретный layout или конкретную
+small-buffer optimization.
+
+Практически wrapper может вносить:
+indirect call; дополнительное состояние для type erasure; иногда dynamic allocation для target; невозможность некоторых optimizations по сравнению с полностью известным concrete callable type.
+
+\begin{performancebox}[Не говорить «std::function всегда выделяет память»]
+Реализации часто используют small-object optimization, но размер буфера и факт
+allocation для конкретного closure не являются универсальным обещанием,
+на которое должен опираться переносимый код.
+\end{performancebox}
+
+Если callback только немедленно вызывается, template parameter часто проще и
+дешевле. Если callback нужно хранить heterogeneously, \texttt{std::function}
+может быть именно тем abstraction, который нужен.
+
+\subsection{Пустой \texttt{std::function}}
+
+Wrapper может не содержать callable:
+
+\begin{cppcode}
+std::function<void()> callback;
+
+if (callback) {
+    callback();
+}
+\end{cppcode}
+
+Вызов пустого \texttt{std::function} бросает
+\texttt{std::bad\_function\_call}. Обычно registry проверяет наличие или
+гарантирует invariant, что slot заполнен.
+
+\subsection{Copyability target в C++17}
+
+Для конструкции \texttt{std::function} из callable target в C++17 target должен
+удовлетворять требованиям copyability.
+
+Поэтому:
+
+\begin{cppcode}
+auto owner = std::make_unique<Job>();
+
+auto move_only =
+    [job = std::move(owner)]() {
+        job->run();
+    };
+
+// std::function<void()> f = std::move(move_only);
+// для move-only closure это не подходит в C++17
+\end{cppcode}
+
+Эксперимент проверяет это настоящей compile failure.
+
+\subsection{\texttt{std::optional<T>}: отсутствие как часть типа}
+
+До C++17 функции часто кодировали «не найдено» через:
+magic value \texttt{-1}; пустую строку; nullable pointer; отдельный bool + output parameter.
+
+Если функция концептуально возвращает value \texttt{T}, но value может
+отсутствовать, \texttt{std::optional<T>} делает это явным:
+
+\begin{cppcode}
+std::optional<CourseBlock> find_block(int number);
+\end{cppcode}
+
+Result либо содержит \texttt{CourseBlock}, либо находится в disengaged state.
+
+\subsection{Создание optional}
+
+\begin{cppcode}
+std::optional<int> a = 42;
+std::optional<int> b = std::nullopt;
+auto c = std::make_optional<std::string>("ready");
+\end{cppcode}
+
+Для функции удобно:
+
+\begin{cppcode}
+std::optional<int> find_score(const std::string& topic) {
+    if (topic == "templates") {
+        return 9;
+    }
+
+    return std::nullopt;
+}
+\end{cppcode}
+
+\subsection{Проверка optional}
+
+\begin{cppcode}
+if (auto score = find_score("templates")) {
+    std::cout << *score;
+}
+\end{cppcode}
+
+Можно использовать:
+contextual bool conversion; \texttt{has\_value()}; \texttt{operator*} / \texttt{operator->} после доказанного наличия; \texttt{value()}; \texttt{value\_or(default)}.
+
+\texttt{value()} у пустого optional бросает
+\texttt{std::bad\_optional\_access}. Разыменовывать пустой optional через
+\texttt{operator*} нельзя.
+
+\subsection{Optional не означает error details}
+
+\texttt{optional<T>} отвечает только на вопрос «есть T или нет». Он не сообщает,
+\emph{почему} значения нет.
+
+Если caller должен различать invalid input, I/O failure и not-found, нужны
+другие error contracts: status object, exception или более богатый result type.
+
+Это связывает тему с блоком~\ref{sec:lecture-10}: abstraction выбирается по
+информации, которую обязан получить caller.
+
+\subsection{Optional и pointers}
+
+Если функция возвращает non-owning view на существующий object, nullable pointer
+может быть естественнее:
+
+\begin{cppcode}
+const CourseBlock* find_block_view(int number);
+\end{cppcode}
+
+Если функция возвращает самостоятельное value, которое может отсутствовать:
+
+\begin{cppcode}
+std::optional<CourseBlock> find_block_copy(int number);
+\end{cppcode}
+
+Выбор зависит не от моды, а от ownership/lifetime contract.
+
+\subsection{Optional reference отсутствует}
+
+В C++17 стандартный \texttt{std::optional<T\&>} не поддерживается.
+Для optional borrow обычно используют pointer или
+\texttt{std::reference\_wrapper<T>} внутри optional, если это действительно
+улучшает design.
+
+Не пытайтесь превращать optional в универсальный контейнер «для всего».
+
+\subsection{Прикладной query API}
+
+Соберём темы вместе:
+
+\begin{cppcode}
+template <typename Predicate>
+std::optional<CourseBlock>
+find_first(const std::vector<CourseBlock>& blocks,
+           Predicate predicate) {
+    for (const auto& block : blocks) {
+        if (predicate(block)) {
+            return block;
+        }
+    }
+
+    return std::nullopt;
+}
+\end{cppcode}
+
+Caller:
+
+\begin{cppcode}
+const int min_examples = 2;
+
+auto result = find_first(
+    blocks,
+    [min_examples](const CourseBlock& block) {
+        return block.examples >= min_examples;
+    }
+);
+
+if (result) {
+    std::cout << result->slug;
+}
+\end{cppcode}
+
+Здесь:
+template выводит concrete predicate type; lambda хранит threshold by value; \texttt{const auto\&} внутри query не копирует элементы; \texttt{optional<CourseBlock>} явно выражает отсутствие; caller не использует magic index \texttt{-1}.
+
+\subsection{Structured binding в прикладном API}
+
+Если функция возвращает несколько связанных значений:
+
+\begin{cppcode}
+auto summary = std::pair{ready_count, total_count};
+const auto [ready, total] = summary;
+\end{cppcode}
+
+CTAD выводит template arguments \texttt{pair}, structured binding даёт имена
+двум components. Но если у пары есть domain meaning, отдельный named struct
+может быть читабельнее.
+
+\begin{whybox}[Современный синтаксис не отменяет моделирование]
+\texttt{auto}, CTAD и structured bindings уменьшают шум. Они не должны
+превращать программу в набор безымянных tuple/pair, если предметная область
+заслуживает собственного типа.
+\end{whybox}
+
+\subsection{Callback registry как runtime boundary}
+
+Registry хранит разные callbacks:
+
+\begin{cppcode}
+class Registry {
+public:
+    using Callback = std::function<void(const Event&)>;
+
+    void subscribe(Callback callback) {
+        callbacks_.push_back(std::move(callback));
+    }
+
+    void publish(const Event& event) const {
+        for (const auto& callback : callbacks_) {
+            callback(event);
+        }
+    }
+
+private:
+    std::vector<Callback> callbacks_;
+};
+\end{cppcode}
+
+Здесь \texttt{std::function} оправдан: callbacks имеют разные closure types,
+создаются в разных местах и должны храниться вместе после завершения
+\texttt{subscribe}.
+
+\subsection{Capture lifetime в registry}
+
+Опасный вариант:
+
+\begin{cppcode}
+Registry registry;
+
+{
+    int local = 0;
+    registry.subscribe([&local](const Event&) {
+        ++local;
+    });
+} // local уничтожен
+
+// registry.publish(...); // dangling reference внутри closure
+\end{cppcode}
+
+\texttt{std::function} корректно владеет closure object, но closure object может
+сам содержать dangling reference. Type erasure не исправляет capture lifetime.
+
+Безопасные варианты:
+capture independent state by value; захватывать \texttt{shared\_ptr}, если callback действительно должен продлевать shared lifetime; использовать \texttt{weak\_ptr}, если callback только наблюдает owner; гарантировать внешний lifetime reference capture явным design contract.
+
+\subsection{Mutable state внутри callback}
+
+Init-capture позволяет callback иметь собственное состояние:
+
+\begin{cppcode}
+registry.subscribe(
+    [calls = 0](const Event&) mutable {
+        ++calls;
+        std::cout << calls << '\n';
+    }
+);
+\end{cppcode}
+
+Каждая copy closure получает собственную copy state. Если wrapper/registry
+копирует callback, это может иметь значение. Нельзя автоматически считать,
+что mutable lambda --- «один глобальный счётчик».
+
+\subsection{Lambda и \texttt{this}}
+
+В member function lambda может обращаться к object через capture \texttt{this}.
+Но если callback переживёт object, raw \texttt{this} станет dangling.
+
+Для long-lived callback ownership model нужно проектировать явно. Например,
+shared-owned object иногда передаёт \texttt{weak\_ptr} в callback и перед
+использованием вызывает \texttt{lock()}.
+
+Так блоки 11 и 13 соединяются напрямую.
+
+\subsection{Когда function pointer всё ещё достаточен}
+
+Captureless lambda может преобразовываться к совместимому function pointer.
+Обычный function pointer остаётся хорошим инструментом для C API или API, где
+state не нужен.
+
+\texttt{std::function} не нужно использовать автоматически в каждом месте,
+где параметр можно вызвать.
+
+\subsection{Generic lambda или std::function?}
+
+Сравнение:
+
+\begin{center}
+\begin{tabularx}{\textwidth}{L{0.25\textwidth}YY}
+\toprule
+Свойство & Template/generic callable & \texttt{std::function} \\
+\midrule
+Concrete type известен compiler & да & скрыт type erasure \\
+Heterogeneous storage & не напрямую & да \\
+Move-only callable в C++17 & да, если API поддерживает move & target для \texttt{std::function} должен быть copyable \\
+Inlining opportunities & обычно лучше видны compiler & indirect boundary может мешать \\
+Stable runtime wrapper type & нет одного общего type & да \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\subsection{Эксперимент 1: course\_query\_pipeline}
+
+Каталог:
+\filepath{examples/13\_type\_deduction\_lambdas\_and\_function/01\_course\_query\_pipeline}.
+
+Эксперимент строит маленький query API для учебных blocks:
+1) \texttt{auto}, \texttt{decltype} и \texttt{static\_assert} проверяют реальные deduced types; 2) structured bindings разбирают summary; 3) CTAD создаёт \texttt{std::pair} без явных template arguments; 4) generic lambda работает с несколькими numeric types; 5) predicate lambda фильтрует blocks; 6) \texttt{std::optional<CourseBlock>} представляет found/not-found без magic index.
+
+Отдельный negative compile file действительно использует local variable в
+lambda без capture и должен быть отвергнут compiler.
+
+\begin{shellcode}
+cd examples/13_type_deduction_lambdas_and_function/01_course_query_pipeline
+./run_checks.sh
+\end{shellcode}
+
+\subsection{Эксперимент 2: callback\_registry\_lab}
+
+Каталог:
+\filepath{examples/13\_type\_deduction\_lambdas\_and\_function/02\_callback\_registry\_lab}.
+
+Registry хранит \texttt{std::function<void(const Event\&)>} и принимает:
+free function; function object; lambda с value capture; mutable lambda с собственным state; lambda, наблюдающую shared-owned object через \texttt{weak\_ptr}.
+
+Проверяется также empty \texttt{std::function} и
+\texttt{std::bad\_function\_call}. Negative compile case показывает ограничение
+C++17: move-only closure с \texttt{unique\_ptr} нельзя положить в
+\texttt{std::function}.
+
+\begin{shellcode}
+cd examples/13_type_deduction_lambdas_and_function/02_callback_registry_lab
+./run_checks.sh
+\end{shellcode}
+
+\subsection{Стоимость и границы abstraction}
+
+\texttt{auto}, \texttt{decltype}, structured bindings и CTAD в основном влияют
+на compile-time type deduction и сами по себе не добавляют отдельный runtime
+object «для вывода типа».
+
+Lambda closure --- настоящий object. Его size зависит от captures и
+implementation details/alignment. Captureless closure не обязана иметь size
+zero.
+
+Template callable часто позволяет compiler видеть concrete call path.
+\texttt{std::function} покупает runtime uniformity ценой type-erasure layer и
+возможного allocation/indirect call.
+
+\texttt{optional<T>} обычно должен хранить состояние engaged/disengaged плюс
+место для \texttt{T}, но конкретный layout не гарантируется как простая формула
+\texttt{sizeof(T)+1}.
+
+\begin{performancebox}[Не угадываем стоимость по синтаксису]
+Короткая lambda не обязательно «быстрее функции», а \texttt{std::function} не
+обязательно делает allocation. Если callback path важен для performance,
+измеряют реальную программу и конкретные target/compiler settings.
+\end{performancebox}
+
+\subsection{Итоговый checklist}
+
+Когда видите длинный type:
+если initializer однозначно задаёт type --- рассмотрите \texttt{auto}; если важны reference/const semantics --- напишите их явно; если нужен type expression --- \texttt{decltype}; для tuple-like decomposition --- structured bindings; CTAD используйте, когда deduction делает type очевиднее, а не загадочнее.
+
+Когда нужно передать поведение:
+local behavior --- lambda; generic immediate call --- template callable; runtime heterogeneous storage --- \texttt{std::function}; capture lifetime проверяется отдельно от wrapper.
+
+Когда результат может отсутствовать:
+standalone value --- \texttt{std::optional<T>}; non-owning optional view --- часто pointer; если нужны причины ошибки --- более богатый error contract.
+
+\begin{importantbox}[Главный вывод]
+Современный C++ позволяет писать меньше типов вручную, но правильный design всё
+равно строится вокруг точных contracts. \texttt{auto} не отменяет type,
+lambda не отменяет lifetime, \texttt{std::function} не отменяет стоимость
+runtime abstraction, а \texttt{optional} не отменяет проектирование ошибок.
+\end{importantbox}
+
+Следующий блок переходит к STL как к единой системе containers, iterators и
+algorithms. Там callable objects этой лекции станут обычными predicates,
+comparators и operations для standard algorithms.

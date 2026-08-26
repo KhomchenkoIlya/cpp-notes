@@ -1,0 +1,820 @@
+% BLOCK14_STAGE2_MANAGED
+% Lecture 14: STL containers, iterators, algorithms, complexity and invalidation
+\section{Лекция 14. STL: контейнеры, итераторы и алгоритмы}
+\label{sec:lecture-14}
+
+До этого мы изучали отдельные части standard library:
+\texttt{std::vector}, \texttt{std::map}, smart pointers, \texttt{optional},
+lambdas и templates. Теперь объединим их в главную архитектурную идею STL:
+\[
+\text{container}
+\rightarrow
+\text{iterator/range}
+\rightarrow
+\text{algorithm}
+\rightarrow
+\text{callable policy}.
+\]
+
+В прикладной части будем строить pipeline обработки каталога учебных блоков:
+хранение записей, индекс, поиск, фильтрация, сортировка, преобразование,
+агрегация и удаление. Одновременно разберём complexity guarantees и invalidation,
+потому что выбор container определяется не только удобством синтаксиса.
+
+\begin{importantbox}[Идея STL]
+Container отвечает за хранение и lifetime элементов. Iterator описывает позицию
+и способ пройти range. Algorithm работает с range, не обязуясь знать конкретный
+container. Lambda/function object задаёт переменную часть поведения.
+\end{importantbox}
+
+\subsection{Что такое STL в этом блоке}
+
+Исторически термин STL относился к Standard Template Library, а современная
+C++ standard library шире. В учебной практике под «STL-стилем» мы будем иметь в
+виду прежде всего:
+containers; iterators; algorithms; function objects/predicates; связанные utility abstractions.
+
+Не вся standard library относится к STL, и не нужно смешивать эти понятия как
+строгие синонимы.
+
+\subsection{Почему контейнеров несколько}
+
+Если бы единственным критерием было «хранить набор объектов», одного
+\texttt{vector} хватило бы почти всегда. Но программы предъявляют разные
+требования:
+нужен ли contiguous storage; важен ли порядок; нужен ли быстрый lookup по key; часто ли вставляем в середину; нужны ли стабильные references/iterators; сколько allocations приемлемо; важна ли cache locality; нужен ли deterministic ordered traversal.
+
+Выбор container --- часть design и cost model.
+
+\subsection{\texttt{std::array}}
+
+\texttt{std::array<T, N>} --- fixed-size container, размер известен в type.
+
+\begin{cppcode}
+std::array<int, 4> values{1, 2, 3, 4};
+\end{cppcode}
+
+Плюсы:
+contiguous elements; size не меняется; обычный container API: \texttt{begin()}, \texttt{end()}, \texttt{size()}; хорошо работает с algorithms.
+
+Это удобная modern abstraction над built-in array, когда размер фиксирован.
+
+\subsection{\texttt{std::vector}}
+
+\texttt{vector<T>} --- основной general-purpose sequence container:
+элементы contiguous; быстрый random access; amortized constant-time \texttt{push\_back}; обычно хорошая locality при sequential traversal; рост может вызвать reallocation.
+
+\begin{cppcode}
+std::vector<CourseBlock> blocks;
+blocks.push_back({14, "stl", 2});
+\end{cppcode}
+
+Для большинства динамических последовательностей начинайте с \texttt{vector}, если нет конкретного требования, которое ему противоречит.
+
+\subsection{Size и capacity}
+
+У \texttt{vector} различаются:
+\texttt{size()} --- число живых элементов; \texttt{capacity()} --- сколько элементов можно разместить без следующего расширения storage.
+
+\begin{cppcode}
+std::vector<int> values;
+values.reserve(100);
+\end{cppcode}
+
+\texttt{reserve(100)} не создаёт 100 элементов и не меняет \texttt{size()}.
+Он просит capacity не меньше 100.
+
+\begin{standardbox}[Что гарантирует reserve]
+Если requested capacity больше текущей, происходит reallocation. Если нет ---
+reallocation не происходит. После успешного \texttt{reserve} вставки не
+вызывают reallocation, пока size не превысит capacity.
+\end{standardbox}
+
+\subsection{Почему reallocation важен}
+
+При росте \texttt{vector} может получить новый storage и перенести/скопировать
+элементы. Старый storage освобождается.
+
+Следствия:
+addresses элементов меняются; pointers/references/iterators на элементы становятся invalid при reallocation; стоимость отдельного роста может быть линейной по числу элементов; последовательность многих \texttt{push\_back} всё равно имеет amortized constant complexity.
+
+\begin{warningbox}[Amortized O(1) не означает каждый push\_back O(1)]
+Иногда \texttt{push\_back} требует allocation и переноса существующих элементов.
+Гарантия говорит о средней стоимости последовательности операций в
+амортизированном анализе.
+\end{warningbox}
+
+\subsection{\texttt{std::deque}}
+
+\texttt{deque<T>} --- sequence с efficient insertion/removal на обоих концах.
+
+Он не обязан хранить все элементы в одном contiguous block. Random access
+поддерживается, но locality/layout отличаются от \texttt{vector}.
+
+Обычный выбор:
+часто нужны \texttt{push\_front}/\texttt{pop\_front}; random access всё ещё нужен; contiguous storage не требуется.
+
+Не делайте вывод «deque = vector без reallocation»: правила invalidation и
+representation другие и должны читаться отдельно.
+
+\subsection{\texttt{std::list}}
+
+\texttt{list<T>} --- doubly linked list.
+
+Полезные свойства:
+insertion/erase по известному iterator обычно constant complexity; references/iterators к другим элементам обычно сохраняются при insertion/erase; нет random-access iterator; каждый node обычно хранится отдельно; locality при traversal обычно хуже contiguous vector.
+
+\begin{performancebox}[O(1) insertion не делает list автоматически быстрее]
+Чтобы вставить «в середину по номеру», сначала может понадобиться линейно найти
+позицию. Отдельные allocations и pointer chasing также дают большие constant
+factors. Asymptotics --- только часть стоимости.
+\end{performancebox}
+
+\subsection{\texttt{std::forward\_list}}
+
+\texttt{forward\_list<T>} --- singly linked list. Он экономнее по links и
+поддерживает операции around a known predecessor, но interface менее удобен.
+
+В обычном application code встречается реже. Выбирать его стоит под конкретное
+требование, а не потому что «односвязный список проще».
+
+\subsection{Ordered associative containers}
+
+\texttt{std::map<Key, T>} и \texttt{std::set<Key>} поддерживают ordering по
+comparator.
+
+Обычные guarantees:
+lookup/insert/erase --- logarithmic complexity; traversal идёт в порядке comparator; insertion обычно не invalidates iterators/references к существующим элементам; erase invalidates только erased elements.
+
+\texttt{map} хранит key-value pairs, \texttt{set} --- keys.
+
+\subsection{Unordered associative containers}
+
+\texttt{std::unordered\_map} и \texttt{std::unordered\_set} организованы вокруг
+hashing.
+
+Обычный contract:
+average-case lookup/insert/erase --- constant complexity; worst case может быть linear; iteration order не sorted; rehash влияет на iterators; quality hash/equality важна.
+
+\begin{warningbox}[O(1) у unordered\_map --- average, не абсолютное обещание]
+Нельзя писать «unordered\_map всегда быстрее map». Учитываются размер данных,
+hash cost, allocations, locality, ordering requirements и worst-case behavior.
+\end{warningbox}
+
+\subsection{Когда map, когда unordered\_map}
+
+\texttt{map} подходит, если:
+нужен sorted traversal; нужны ordered operations вроде \texttt{lower\_bound}; важен logarithmic worst-case contract.
+
+\texttt{unordered\_map} подходит, если:
+нужен lookup по exact key; порядок не важен; хороший hash доступен; average constant lookup соответствует задаче.
+
+\subsection{Адаптеры контейнеров}
+
+\texttt{stack}, \texttt{queue}, \texttt{priority\_queue} --- container adapters.
+Они намеренно предоставляют более узкий interface поверх underlying container.
+
+Например, \texttt{queue} выражает FIFO semantics. Если application должен
+доставать произвольный элемент по iterator, возможно, \texttt{queue} выбран
+неверно.
+
+\subsection{Iterator: абстракция позиции}
+
+Iterator --- объект, с помощью которого algorithm обращается к position в
+range.
+
+\begin{cppcode}
+auto it = blocks.begin();
+
+if (it != blocks.end()) {
+    std::cout << it->slug;
+}
+\end{cppcode}
+
+Iterator не обязан быть raw pointer, хотя iterator contiguous container может
+быть pointer-like.
+
+Не нужно утверждать, что iterator «это указатель внутри STL». Это abstraction
+с определёнными operations и guarantees.
+
+\subsection{Half-open range \texttt{[first, last)}}
+
+Большинство classic algorithms принимает пару iterators:
+\[
+[first, last).
+\]
+
+\texttt{first} относится к range, \texttt{last} указывает на позицию
+\emph{после} последнего элемента.
+
+Преимущества:
+empty range задаётся \texttt{first == last}; length естественно выражается distance; соседние ranges стыкуются без специальной обработки границы.
+
+\subsection{Iterator categories}
+
+Не все iterators поддерживают одинаковые операции.
+
+Классическая иерархия требований:
+input iterator; output iterator; forward iterator; bidirectional iterator; random-access iterator; в C++20 отдельно формализован contiguous iterator.
+
+\texttt{vector} предоставляет random-access iterators.
+\texttt{list} --- bidirectional iterators.
+
+Поэтому algorithm \texttt{std::sort} требует random-access iterator и не
+работает с \texttt{std::list::iterator}.
+
+\subsection{Почему list имеет member \texttt{sort}}
+
+\begin{cppcode}
+std::list<int> values{4, 1, 3};
+values.sort();
+\end{cppcode}
+
+List знает свою node-based structure и может сортировать её без random-access
+iterator. Попытка передать \texttt{list.begin()/end()} в \texttt{std::sort}
+проверяется в практике как real compile failure.
+
+\subsection{Const iterator}
+
+\texttt{const\_iterator} не разрешает менять элемент через iterator.
+
+\begin{cppcode}
+const std::vector<int> values{1, 2, 3};
+auto it = values.begin(); // iterator to const element
+\end{cppcode}
+
+Также есть \texttt{cbegin()}/\texttt{cend()}, если хочется явно запросить
+read-only iterator у non-const container.
+
+\subsection{Range-based for}
+
+\begin{cppcode}
+for (const auto& block : blocks) {
+    std::cout << block.slug;
+}
+\end{cppcode}
+
+Это удобный syntax поверх begin/end pattern, когда алгоритм прост:
+последовательно пройти range.
+
+Но если задача --- «найти», «отсортировать», «преобразовать», «посчитать»,
+standard algorithm часто выражает намерение лучше ручного loop.
+
+\subsection{\texttt{std::find} и \texttt{std::find\_if}}
+
+\begin{cppcode}
+auto it = std::find_if(
+    blocks.begin(),
+    blocks.end(),
+    [](const CourseBlock& block) {
+        return block.number == 14;
+    }
+);
+\end{cppcode}
+
+Result --- iterator. Если ничего не найдено, он равен \texttt{end()}.
+
+Это non-owning position в container, поэтому применяются lifetime/invalidation
+rules container.
+
+\subsection{\texttt{std::count\_if}}
+
+\begin{cppcode}
+const auto ready = std::count_if(
+    blocks.begin(),
+    blocks.end(),
+    [](const CourseBlock& block) {
+        return block.complete;
+    }
+);
+\end{cppcode}
+
+Algorithm принимает predicate из блока~\ref{sec:lecture-13}. Container при этом
+может быть другим, если iterator requirements выполнены.
+
+\subsection{\texttt{std::copy} и output iterators}
+
+Algorithms могут писать через output iterator.
+
+\begin{cppcode}
+std::vector<CourseBlock> ready;
+
+std::copy_if(
+    blocks.begin(),
+    blocks.end(),
+    std::back_inserter(ready),
+    [](const CourseBlock& block) {
+        return block.complete;
+    }
+);
+\end{cppcode}
+
+\texttt{std::back\_inserter} создаёт adapter, который превращает assignment
+algorithm-а в \texttt{push\_back} container.
+
+\subsection{\texttt{std::transform}}
+
+\begin{cppcode}
+std::vector<std::string> slugs;
+
+std::transform(
+    blocks.begin(),
+    blocks.end(),
+    std::back_inserter(slugs),
+    [](const CourseBlock& block) {
+        return block.slug;
+    }
+);
+\end{cppcode}
+
+Mechanism traversal находится в algorithm, conversion policy --- в lambda.
+
+\subsection{\texttt{std::accumulate}}
+
+\texttt{std::accumulate} находится в \headerfile{numeric}:
+
+\begin{cppcode}
+const int examples = std::accumulate(
+    blocks.begin(),
+    blocks.end(),
+    0,
+    [](int total, const CourseBlock& block) {
+        return total + block.examples;
+    }
+);
+\end{cppcode}
+
+Тип initial value важен: он влияет на accumulator type.
+
+Например, initial \texttt{0} --- \texttt{int}; initial \texttt{0.0} ---
+\texttt{double}.
+
+\subsection{\texttt{std::sort}}
+
+\begin{cppcode}
+std::sort(
+    blocks.begin(),
+    blocks.end(),
+    [](const CourseBlock& left, const CourseBlock& right) {
+        return left.number < right.number;
+    }
+);
+\end{cppcode}
+
+Для \texttt{std::sort} complexity --- $O(N \log N)$ comparisons в standard
+guarantee современной C++ library.
+
+Comparator должен задавать корректное strict weak ordering.
+
+\subsection{Ошибка comparator}
+
+Плохо:
+
+\begin{cppcode}
+[](int a, int b) {
+    return a <= b;
+}
+\end{cppcode}
+
+Для равных значений comparator возвращает true в обе стороны и нарушает
+требования ordering.
+
+Правильно для ascending order:
+
+\begin{cppcode}
+[](int a, int b) {
+    return a < b;
+}
+\end{cppcode}
+
+Algorithm contracts включают требования не только к iterator, но и к callable.
+
+\subsection{Stable sort}
+
+\texttt{std::stable\_sort} сохраняет relative order equivalent elements.
+Обычный \texttt{std::sort} этого не обещает.
+
+Если сначала отсортировать по secondary key, а затем stable-sort по primary key,
+можно сохранить нужный secondary ordering. Но зачастую яснее сразу написать
+comparator по tuple ключей.
+
+\subsection{\texttt{lower\_bound}}
+
+Для sorted range:
+
+\begin{cppcode}
+auto it = std::lower_bound(
+    values.begin(),
+    values.end(),
+    target
+);
+\end{cppcode}
+
+Algorithm использует ordering и на random-access iterator выполняет logarithmic
+число comparisons. Но стоимость iterator movement зависит от iterator category.
+
+Для ordered associative container часто разумнее использовать member
+\texttt{lower\_bound}, потому что container может использовать внутреннюю
+tree structure.
+
+\subsection{\texttt{all\_of}, \texttt{any\_of}, \texttt{none\_of}}
+
+Эти algorithms напрямую выражают логические queries:
+
+\begin{cppcode}
+const bool all_ready = std::all_of(
+    blocks.begin(),
+    blocks.end(),
+    [](const CourseBlock& block) {
+        return block.complete;
+    }
+);
+\end{cppcode}
+
+Они могут завершить обход раньше, как только result уже определён.
+
+\subsection{Алгоритм не знает container}
+
+Это основная сила STL.
+
+\begin{cppcode}
+template <typename Iterator, typename Predicate>
+std::size_t count_matching(
+    Iterator first,
+    Iterator last,
+    Predicate predicate);
+\end{cppcode}
+
+Concrete algorithm может работать с \texttt{vector}, \texttt{list}, built-in
+array или другим range, если iterators удовлетворяют требованиям.
+
+Templates дают static polymorphism по iterator/callable types.
+
+\subsection{Complexity --- часть API}
+
+Для container/algorithm complexity guarantee нужно читать как contract.
+
+Примеры:
+\texttt{vector::operator[]} --- constant; \texttt{vector::push\_back} --- amortized constant; \texttt{map::find} --- logarithmic; \texttt{unordered\_map::find} --- average constant; \texttt{find\_if} --- linear в размере range в worst case; \texttt{sort} --- $O(N \log N)$ comparisons.
+
+Но Big-O не описывает cache misses, allocation cost, branch behavior и object
+size.
+
+\subsection{Cache locality}
+
+Contiguous \texttt{vector} часто хорошо подходит sequential traversal:
+соседние элементы расположены рядом в storage.
+
+Node-based \texttt{list/map} обычно требует переходов между nodes, которые
+могут находиться в разных местах памяти.
+
+Это обычная performance model, а не стандартное обещание конкретного cache
+поведения CPU. Измерять нужно на реальном workload.
+
+\subsection{Iterator invalidation}
+
+\term{Invalidation} означает, что ранее полученный iterator/reference/pointer
+больше нельзя использовать в тех operations, для которых он был валиден.
+
+Причина --- container изменил storage или удалил соответствующий element.
+
+Ошибки invalidation особенно опасны, потому что source code выглядит невинно:
+
+\begin{cppcode}
+auto it = values.begin();
+values.push_back(42);
+// *it может быть invalid, если случилась vector reallocation
+\end{cppcode}
+
+\subsection{Vector invalidation при росте}
+
+Если \texttt{vector} reallocate:
+invalid становятся все iterators; references; pointers на elements.
+
+Если reallocation не было, insertion rules всё равно могут invalidировать
+positions в зависимости от места операции. Например, insertion/erase в
+середине сдвигают последующие elements.
+
+Всегда читайте contract конкретной operation.
+
+\subsection{Как безопасно наблюдать reallocation}
+
+В практике мы сохраняем:
+\texttt{data()} address как число/для сравнения до изменения; старый capacity; затем вызываем \texttt{push\_back}; после операции сравниваем старый и новый address; \emph{не разыменовываем} старый pointer.
+
+Так можно показать факт reallocation без UB.
+
+Отдельный специально небезопасный executable выполняется только под ASan и
+должен дать diagnostic.
+
+\subsection{List stability}
+
+Для \texttt{list} insertion обычно не invalidates iterators/references к
+существующим elements. Erase invalidates только iterator/reference на erased
+element.
+
+Это сильное отличие от \texttt{vector}, но за него платим node allocations,
+отсутствием random access и locality.
+
+\subsection{Map/set stability}
+
+Для ordered associative containers insertion/emplacement не invalidates
+iterators/references к существующим elements; erase invalidates erased
+elements.
+
+Unordered containers имеют дополнительную ось --- rehash. Rehash invalidates
+iterators, хотя references/pointers к elements имеют отдельные guarantees.
+
+Не переносите правила одного container на другой.
+
+\subsection{Erase у vector}
+
+\begin{cppcode}
+auto it = values.erase(position);
+\end{cppcode}
+
+Result указывает на element, следующий за erased, либо \texttt{end()}.
+
+После erase erased element уничтожен, а элементы после него сдвигаются.
+Iterators/references на erased и subsequent elements invalidated.
+
+\subsection{Erase-remove idiom в C++17}
+
+Classic \texttt{std::remove\_if} сам не уменьшает size container.
+
+\begin{cppcode}
+auto new_end = std::remove_if(
+    values.begin(),
+    values.end(),
+    [](int value) {
+        return value < 0;
+    }
+);
+
+values.erase(new_end, values.end());
+\end{cppcode}
+
+\texttt{remove\_if} переставляет retained elements к началу range и возвращает
+logical new end. Реальное удаление хвоста делает container::erase.
+
+C++20 добавляет удобные \texttt{std::erase}/\texttt{std::erase\_if} для
+поддерживаемых containers, но основной стандарт блока --- C++17.
+
+\subsection{Почему remove\_if не вызывает erase сам}
+
+Generic algorithm знает только iterator range и не обязан иметь доступ к
+container object или его size-management API.
+
+Пример архитектуры STL:
+algorithm работает с range, container отвечает за structural mutation.
+
+\subsection{Алгоритм или member function}
+
+Иногда container предоставляет member function с похожей задачей.
+
+Примеры:
+\texttt{list::sort} вместо \texttt{std::sort}; \texttt{map::find} использует tree structure; \texttt{unordered\_map::find} использует hash table.
+
+Если member может использовать внутреннюю структуру container, он часто точнее
+выражает задачу и даёт нужную complexity.
+
+\subsection{Index рядом с vector}
+
+Прикладной каталог удобно хранить в \texttt{vector<CourseBlock>} для
+последовательной обработки, а дополнительный lookup index строить отдельно:
+
+\begin{cppcode}
+std::unordered_map<int, std::size_t> index;
+
+for (std::size_t i = 0; i < blocks.size(); ++i) {
+    index.emplace(blocks[i].number, i);
+}
+\end{cppcode}
+
+Теперь:
+vector остаётся source of truth; index хранит positions, а не copies objects; lookup по number может быть average O(1).
+
+Но structural mutation vector может сделать сохранённые indices логически
+неверными. Index нужно rebuild/update по contract.
+
+\subsection{Почему index по position безопаснее pointer только условно}
+
+Index \texttt{size\_t} не становится dangling address после reallocation.
+Но если insert/erase меняет порядок элементов, старый index может указывать уже
+на другой object.
+
+Иными словами:
+pointer invalidation --- memory/lifetime problem; stale index --- logic/invariant problem.
+
+Оба случая требуют явного design.
+
+\subsection{Pipeline: filter → sort → transform → aggregate}
+
+Реальный processing pipeline можно писать по шагам:
+
+\begin{cppcode}
+std::vector<CourseBlock> selected;
+
+std::copy_if(
+    blocks.begin(),
+    blocks.end(),
+    std::back_inserter(selected),
+    [](const CourseBlock& block) {
+        return block.examples >= 2;
+    }
+);
+
+std::sort(
+    selected.begin(),
+    selected.end(),
+    [](const CourseBlock& a, const CourseBlock& b) {
+        return a.number < b.number;
+    }
+);
+\end{cppcode}
+
+Дальше \texttt{transform} получает slugs, \texttt{accumulate} считает examples.
+
+Промежуточный vector стоит памяти/copies, но делает pipeline прозрачным.
+Не надо раньше времени превращать код в нечитаемую цепочку abstractions.
+
+\subsection{Algorithms и mutation}
+
+Некоторые algorithms только читают:
+\texttt{find\_if}, \texttt{count\_if}, \texttt{all\_of}.
+
+Другие меняют elements через iterators:
+\texttt{sort}, \texttt{transform} in-place, \texttt{remove\_if}.
+
+Но structural properties container, например size, generic algorithm обычно
+не меняет сам.
+
+Разделяйте element mutation и container structural mutation.
+
+\subsection{Iterator lifetime и owner lifetime}
+
+Iterator --- non-owning handle. Container должен продолжать существовать,
+а operation не должна была invalidate iterator.
+
+\begin{cppcode}
+std::vector<int>::iterator bad();
+
+std::vector<int>::iterator bad() {
+    std::vector<int> local{1, 2, 3};
+    return local.begin(); // iterator переживёт container
+}
+\end{cppcode}
+
+Это тот же lifetime принцип, что raw pointer/reference из ранних блоков.
+
+\subsection{End iterator тоже может invalidated}
+
+Нельзя думать, что только iterators на «реальные элементы» важны.
+Past-the-end iterator также относится к container state и может быть invalidated
+операциями.
+
+Поэтому сохранять \texttt{end()} до structural mutation и использовать после
+неё без проверки contract опасно.
+
+\subsection{Const-correct algorithms}
+
+Если algorithm только читает, передавайте const range/container там, где это
+естественно.
+
+\begin{cppcode}
+int total_examples(const std::vector<CourseBlock>& blocks) {
+    return std::accumulate(
+        blocks.cbegin(),
+        blocks.cend(),
+        0,
+        [](int total, const CourseBlock& block) {
+            return total + block.examples;
+        }
+    );
+}
+\end{cppcode}
+
+Это делает невозможной случайную mutation элементов через iterator.
+
+\subsection{Не копировать container без причины}
+
+Параметр:
+
+\begin{cppcode}
+void print(std::vector<CourseBlock> blocks);
+\end{cppcode}
+
+создаёт своё value, что может означать copy/move container.
+
+Если функция только читает:
+
+\begin{cppcode}
+void print(const std::vector<CourseBlock>& blocks);
+\end{cppcode}
+
+Но generic algorithm APIs часто лучше принимать iterator pair или template
+range-like abstraction, если нужна независимость от конкретного container.
+
+\subsection{Когда конкретный container type в API уместен}
+
+Если функция использует vector-specific guarantees:
+contiguous data; random access; capacity/reserve.
+
+тогда \texttt{vector<T>\&} в API может быть честным contract.
+
+Не нужно делать всё template-generic только ради generic programming.
+
+\subsection{Exception safety}
+
+Standard containers управляют своими resources через RAII. Но сильная/basic
+exception guarantee конкретной operation зависит от type properties и самой
+operation.
+
+Например, vector reallocation может copy/move elements. \texttt{noexcept} move
+из блока~\ref{sec:lecture-12} может влиять на выбранный library strategy.
+
+Не утверждайте универсально «любая STL операция strong exception safe».
+
+\subsection{Allocators: только первый взгляд}
+
+Containers parameterized allocator type, например:
+
+\begin{cppcode}
+std::vector<int, Allocator>
+\end{cppcode}
+
+Allocator abstraction управляет получением/освобождением storage для container.
+Полный allocator model сложен и будет кратко рассмотрен в блоке 15.
+
+В обычном application code default allocator достаточен, пока profiling или
+специальная memory architecture не доказали другое.
+
+\subsection{Практический выбор container}
+
+Начальная эвристика:
+dynamic sequence --- \texttt{vector}; fixed sequence --- \texttt{array}; efficient both-end queue --- \texttt{deque}; node stability/splice-specific workload --- рассмотреть \texttt{list}; ordered key lookup --- \texttt{map}/\texttt{set}; unordered exact-key lookup --- \texttt{unordered\_map}/\texttt{unordered\_set}.
+
+Потом проверяются:
+complexity, invalidation, ordering, locality, allocations и actual workload.
+
+\subsection{Эксперимент 1: course\_catalog\_pipeline}
+
+Каталог:
+\filepath{examples/14\_stl\_containers\_iterators\_algorithms/01\_course\_catalog\_pipeline}.
+
+Программа строит прикладной каталог 15 blocks:
+1) source of truth --- \texttt{vector<CourseBlock>}; 2) number index --- \texttt{unordered\_map<int, size\_t>}; 3) \texttt{find\_if} и index дают два способа query; 4) \texttt{copy\_if} фильтрует готовые blocks; 5) \texttt{sort} упорядочивает выборку; 6) \texttt{transform} получает slugs; 7) \texttt{accumulate} считает число examples; 8) \texttt{map} строит ordered summary по status; 9) \texttt{optional<CourseBlock>} представляет missing query.
+
+\begin{shellcode}
+cd examples/14_stl_containers_iterators_algorithms/01_course_catalog_pipeline
+./run_checks.sh
+\end{shellcode}
+
+\subsection{Эксперимент 2: invalidation\_and\_erase\_lab}
+
+Каталог:
+\filepath{examples/14\_stl\_containers\_iterators\_algorithms/02\_invalidation\_and\_erase\_lab}.
+
+Safe executable проверяет:
+\texttt{vector::reserve} и growth без reallocation внутри capacity; forced reallocation и изменение \texttt{data()} address без использования старого pointer; erase-remove idiom; возвращаемый iterator \texttt{erase}; list iterator/reference stability при вставке другого element; unordered-map rehash observation без использования invalidated iterator.
+
+Отдельный ASan-only executable намеренно разыменовывает pointer после forced
+vector reallocation и должен дать use-after-free diagnostic.
+
+Ещё один negative compile file подтверждает, что \texttt{std::sort} нельзя
+применить к \texttt{std::list} iterators.
+
+\begin{shellcode}
+cd examples/14_stl_containers_iterators_algorithms/02_invalidation_and_erase_lab
+./run_checks.sh
+\end{shellcode}
+
+\subsection{Что проверяет практика, а что нет}
+
+Experiments подтверждают поведение текущей toolchain и конкретных inputs.
+Они не заменяют standard guarantee.
+
+Например:
+изменение \texttt{data()} действительно показывает reallocation в case, который специально превышает capacity; ASan diagnostic показывает конкретную lifetime ошибку; отсутствие sanitizer report в safe run не доказывает отсутствие всех UB; measured addresses не превращаются в переносимое обещание allocator.
+
+\subsection{Итоговый checklist STL}
+
+Перед выбором container спросите:
+какие операции доминируют; какой complexity contract нужен; нужен ли ordering; нужна ли pointer/reference stability; важна ли contiguous storage/locality; как часто меняется структура container.
+
+Перед использованием iterator:
+жив ли owner container; не было ли invalidating operation; удовлетворяет ли iterator category требованиям algorithm; не сохранили ли мы stale \texttt{end()}.
+
+Перед написанием manual loop:
+есть ли standard algorithm, который точнее выражает намерение; нужен ли predicate/lambda из блока 13; structural mutation отделена от element processing.
+
+\begin{importantbox}[Главный вывод]
+STL --- не список удобных функций. Это система contracts между storage,
+positions, algorithms и callable policies. Хороший C++ code выбирает container
+по требованиям, использует algorithms для намерения и всегда учитывает
+complexity и invalidation.
+\end{importantbox}
+
+Следующий, последний базовый блок соберёт современный C++ в единую картину:
+\texttt{constexpr}, C++20 Concepts, обзор coroutines и modules, allocators,
+tooling, дальнейший маршрут обучения и критерии выбора возможностей языка.

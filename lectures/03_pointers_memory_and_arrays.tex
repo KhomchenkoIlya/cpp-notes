@@ -1,0 +1,423 @@
+% Lecture 03: Указатели, память и массивы
+
+\section{Лекция 3. Указатели, память и массивы}
+\label{sec:lecture-03}
+
+В предыдущей лекции объект хранил одно значение, а цикл повторял действие.
+Теперь нужно хранить несколько однотипных объектов подряд и понимать их
+адреса. Сначала построим честную модель raw array и указателя, затем увидим,
+какую ручную работу снимают \texttt{std::array} и \texttt{std::vector}.
+
+\begin{importantbox}[Главный вопрос]
+Что означает «несколько объектов подряд в памяти», почему возникает pointer
+arithmetic и почему для обычного изменяемого набора данных современный C++
+чаще выбирает \texttt{std::vector}?
+\end{importantbox}
+
+\subsection{Объект, storage, lifetime и адрес}
+
+Уточним три разных понятия: \emph{storage} --- память, достаточно большая и
+правильно выровненная для объекта; \emph{object lifetime} --- интервал
+выполнения, в котором объект существует; \emph{value} --- информация, которую
+он хранит. Storage само по себе ещё не всегда означает живой объект. Для
+обычного локального объекта lifetime начинается после инициализации и
+заканчивается при выходе из блока.
+
+\begin{cppcode}
+int score{42};
+std::cout << score << '\n';   // значение
+std::cout << &score << '\n';  // адрес объекта
+\end{cppcode}
+
+\begin{definition}
+\textbf{Адрес} --- значение, обозначающее положение объекта или функции в
+абстрактной модели C++. Указатель может хранить такое значение.
+\end{definition}
+
+Выведенный адрес помогает наблюдать взаимное размещение, но его нельзя без
+оговорки называть физическим адресом RAM. Automatic storage duration также не
+обязывает реализацию держать объект на CPU stack: это обычная реализация, а
+не требование стандарта.
+
+\texttt{sizeof(expression)} даёт размер представления в байтах типа
+\texttt{std::size\_t}. Байт C++ равен размеру \texttt{char} и содержит не
+менее восьми бит; универсального обещания ровно восьми бит нет. Обычно операнд
+\texttt{sizeof} не вычисляется. Результат «\texttt{int} равен 4 байтам» можно
+наблюдать на машине, но нельзя превращать в закон языка. Alignment означает,
+что адрес некоторых типов должен быть подходяще выровнен; компилятор учитывает
+это при размещении, подробности сейчас не нужны.
+
+\subsection{Pointer basics: адрес и значение по адресу}
+
+\begin{cppcode}
+int score{42};
+int* pointer{&score};
+
+std::cout << pointer << '\n';   // pointer value: адрес score
+std::cout << *pointer << '\n';  // pointed-to value: 42
+*pointer = 50;                  // меняет score
+\end{cppcode}
+
+\texttt{int* pointer} объявляет объект типа «pointer to \texttt{int}».
+Звёздочка в declaration участвует в записи типа; \texttt{*pointer} в
+expression выполняет \emph{dereference}. Оператор \texttt{\&score} берёт
+адрес. Pointer --- не «просто integer»: у него отдельный тип, допустимые
+операции и правила действительности.
+
+\begin{whybox}[Зачем различать pointer и pointed-to value]
+Копирование \texttt{pointer} копирует адресное значение, не \texttt{score}.
+Присваивание \texttt{*pointer = 50} работает с объектом по адресу.
+\end{whybox}
+
+Минимальный \texttt{const} для чтения без изменения:
+
+\begin{cppcode}
+int score{42};
+const int* view{&score};
+// *view = 50; // compile-time error
+\end{cppcode}
+
+Сам \texttt{view} можно направить на другой \texttt{int}. Полная система
+const будет в следующем блоке.
+
+\subsubsection{nullptr и действительность}
+
+\texttt{nullptr} явно означает «сейчас не указывает на объект» и имеет
+специальный тип. Старый литерал \texttt{0} не используем как основной стиль.
+
+\begin{cppcode}
+int* selected{nullptr};
+if (selected != nullptr) {
+    std::cout << *selected << '\n';
+}
+\end{cppcode}
+
+Dereference требует подходящий живой объект. Проверка на \texttt{nullptr}
+устраняет только null case, но не распознаёт dangling pointer.
+
+\begin{definition}
+\textbf{Dangling pointer} сохраняет адресное значение после окончания lifetime
+объекта, на который раньше указывал. Доступ к прежнему объекту через него
+недопустим.
+\end{definition}
+
+Неинициализированный локальный pointer фундаментального типа имеет
+неопределённое значение; его использование может иметь undefined behavior.
+Безопасная привычка --- сразу дать адрес живого объекта или \texttt{nullptr}.
+
+\subsection{Raw array: фиксированная последовательность}
+
+\begin{cppcode}
+int temperatures[4]{18, 20, 21, 19};
+\end{cppcode}
+
+Это built-in, или raw, array из четырёх \texttt{int}. Extent \texttt{4}
+входит в array type и известен при компиляции. Все элементы имеют один
+тип, индексы идут от нуля, объекты расположены непрерывно без промежутков
+между соседними элементами.
+
+\begin{cppcode}
+int values[4]{};          // все элементы равны нулю
+int inferred[]{2, 4, 6}; // extent 3 выведен из initializer
+int partial[4]{7, 8};    // 7, 8, 0, 0
+values[0] = 10;
+\end{cppcode}
+
+Во время выполнения \texttt{values[i]} выбирает элемент, но built-in access
+не вставляет обязательную проверку границ.
+
+\begin{cppcode}
+int values[]{10, 20, 30, 40};
+const std::size_t count = sizeof(values) / sizeof(values[0]);
+\end{cppcode}
+
+\texttt{sizeof(values)} здесь означает весь array object, а
+\texttt{sizeof(values[0])} --- элемент. Деление --- лишь локальный
+учебным приёмом там, где expression всё ещё имеет array type.
+
+\begin{ubbox}[Out-of-bounds]
+Для extent $N$ действительны индексы от 0 до $N-1$. \texttt{values[N]} уже
+за границей. Чтение или запись имеет UB. UB не обещает crash: возможны
+правдоподобный вывод, повреждение состояния или иное поведение после
+оптимизации.
+\end{ubbox}
+
+\subsection{Array-to-pointer conversion: массив не pointer}
+
+\begin{cppcode}
+int values[]{10, 20, 30, 40}; // type: int[4]
+int* first{values};           // conversion; type: int*
+\end{cppcode}
+
+Array object и pointer object различны. У массива четыре элемента и fixed
+extent; у \texttt{first} одно pointer value. Во многих expressions array
+неявно преобразуется в pointer на первый элемент: при инициализации
+\texttt{first}, в \texttt{values + 1} и при передаче обычному pointer
+parameter. Функции подробно появятся в блоке~4.
+
+Преобразование происходит не везде:
+
+\begin{cppcode}
+std::cout << sizeof(values) << '\n'; // весь int[4]
+std::cout << sizeof(first) << '\n';  // один int*
+std::cout << &values << '\n';        // pointer на whole array, другой тип
+\end{cppcode}
+
+После conversion pointer не несёт extent. Поэтому деление размера pointer на
+размер элемента не находит длину исходного массива. Pointer можно
+направить заново, имя массива --- нельзя; raw arrays также не присваиваются
+целиком. Фраза «имя массива --- pointer» скрывает эти различия. Точно:
+array expression во многих контекстах \emph{преобразуется} в pointer.
+
+\subsection{Pointer arithmetic существует из-за массивов}
+
+\begin{cppcode}
+int values[]{10, 20, 30, 40};
+int* p{values};
+std::cout << *(p + 2) << '\n';
+++p;
+std::cout << p - values << '\n';
+\end{cppcode}
+
+Для \texttt{int*} операция \texttt{p + 1} означает следующий \texttt{int},
+не следующий машинный байт. \texttt{a[i]} имеет семантику
+\texttt{*(a + i)}. Вычитание pointers даёт число элементов типа
+\texttt{std::ptrdiff\_t}, но оба должны относиться к одному array object.
+
+\begin{cppcode}
+int values[]{10, 20, 30, 40};
+int* begin{values};
+int* end{values + 4};
+for (int* current = begin; current != end; ++current) {
+    std::cout << *current << '\n';
+}
+\end{cppcode}
+
+\texttt{end} --- one-past pointer: его разрешено сформировать и сравнить как
+границу полуинтервала $[begin,end)$, но \texttt{*end} имеет UB. Нельзя уходить
+дальше one-past или выполнять арифметику между несвязанными arrays.
+
+\begin{performancebox}[Индекс или pointer increment?]
+\texttt{a[i]} и \texttt{*(a + i)} выражают ту же адресацию. Нельзя обещать,
+что одна запись быстрее: нужен benchmark или assembly для конкретных compiler,
+flags и workload. В обычном коде выбираем ясность.
+\end{performancebox}
+
+\subsection{Коротко о C-style strings}
+
+\begin{cppcode}
+char label[]{'C', '+', '+', '\0'};
+char same_label[]{"C++"};
+\end{cppcode}
+
+C-style string --- последовательность \texttt{char} с null terminator
+\texttt{'\textbackslash 0'}. Extent второго массива равен 4, хотя видимых
+символов три. Отсутствие terminator позволяет C API читать за границу. Для
+совместимости такая форма важна, но основной текстовый тип курса ---
+\texttt{std::string}.
+
+\subsection{std::array: удобный fixed-size container}
+
+\begin{cppcode}
+#include <array>
+std::array<int, 4> values{10, 20, 30, 40};
+std::cout << values.size() << '\n';
+std::cout << values[1] << ' ' << values.at(2) << '\n';
+std::cout << values.data() << '\n';
+\end{cppcode}
+
+Размер входит в тип и не меняется runtime, storage contiguous.
+Объект знает \texttt{size()}, копируется и присваивается целиком;
+\texttt{at()} проверяет границу и при ошибке сообщает exception. Исключения
+будут отдельной темой. \texttt{data()} даёт pointer на первый элемент, а
+\texttt{begin()}/\texttt{end()} интуитивно обозначают начало и one-past;
+iterators системно изучим позже.
+
+\subsection{std::vector: dynamic size и владение storage}
+
+Raw array не растёт. Ручной dynamic array потребовал бы получить новый
+участок, перенести элементы и освободить старый на всех путях. Naked
+\texttt{new[]} / \texttt{delete[]} сейчас не используем: управление
+динамической памятью будет позже.
+
+\begin{cppcode}
+std::vector<int> values{10, 20, 30};
+values.push_back(40);
+std::cout << values.size() << ' ' << values.capacity() << '\n';
+std::cout << values[0] << ' ' << values.at(3) << '\n';
+\end{cppcode}
+
+Vector владеет внутренним storage и управляет lifetime элементов. Элементы
+contiguous, \texttt{data()} возвращает pointer на первый. \texttt{empty()}
+проверяет нулевой size. \texttt{operator[]} требует правильной границы от
+программиста; \texttt{at()} проверяет её.
+
+\begin{definition}
+\texttt{size()} --- число живых элементов. \texttt{capacity()} --- сколько
+поместится в текущем storage без нового выделения. Capacity не меньше size,
+но позиции между ними ещё не являются элементами.
+\end{definition}
+
+Когда capacity исчерпана, \texttt{push\_back} может сделать
+\emph{reallocation}: получить больший contiguous участок, перенести элементы
+и отказаться от старого. Точный коэффициент роста и layout не гарантированы.
+
+\begin{cppcode}
+std::vector<int> values{10};
+int* old_data{values.data()};
+const std::size_t old_capacity{values.capacity()};
+while (values.capacity() == old_capacity) {
+    values.push_back(20);
+}
+// old_data больше не dereference: reallocation его инвалидировал
+\end{cppcode}
+
+Элементы теперь живут в новом storage, поэтому старый адрес не обозначает
+прежний живой объект. Reallocation инвалидирует pointers, references и
+iterators на элементы. Последние два термина здесь лишь анонс будущих тем.
+
+\begin{cppcode}
+std::vector<int> values;
+values.reserve(100);
+std::cout << values.size();     // 0
+std::cout << values.capacity(); // не меньше 100
+\end{cppcode}
+
+\texttt{reserve} подготавливает capacity, но не создаёт элементы и не меняет
+logical size; это не \texttt{resize}. Он уменьшает число reallocations при
+хорошем прогнозе, но сам способен инвалидировать старые pointers.
+
+Один рост с reallocation стоит $O(n)$. Capacity растёт с запасом, поэтому
+дорогая операция нужна не при каждом добавлении. \texttt{push\_back} имеет
+amortized $O(1)$: постоянную среднюю стоимость на длинной серии, не гарантию
+$O(1)$ каждого вызова.
+
+\subsection{Raw array, std::array или std::vector?}
+
+\begin{center}\small
+\begin{tabularx}{\textwidth}{@{}lXXX@{}}
+\toprule
+Свойство & raw array & \texttt{std::array} & \texttt{std::vector} \\
+\midrule
+Размер & fixed & fixed, часть типа & dynamic \\
+Знает размер & extent в array type & \texttt{size()} & \texttt{size()} \\
+Checked access & нет & \texttt{at()} & \texttt{at()} \\
+Copy/assignment & не целиком & целиком & целиком \\
+Storage & contiguous & contiguous & contiguous \\
+Pointer access & conversion & \texttt{data()} & \texttt{data()} \\
+Обычная роль & ABI/C API, low-level & fixed container & растущая sequence \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+Raw arrays не запрещены: они раскрывают язык и нужны некоторым ABI,
+embedded- и C interfaces. Для обычного владения fixed sequence удобнее
+\texttt{std::array}, runtime-размером --- \texttt{std::vector}.
+
+\subsection{Карта memory errors}
+
+\textbf{Uninitialized pointer:} неопределённое значение адреса; \textbf{Null dereference:} \texttt{*nullptr} не обозначает объект и имеет UB; \textbf{Dangling/use-after-lifetime:} адрес сохранился после конца lifetime; \textbf{Out-of-bounds:} индекс или dereference вышел за элементы; \textbf{Invalid arithmetic:} pointer вышел за one-past одного массива или операция смешала несвязанные arrays; \textbf{Vector invalidation:} reallocation закончила lifetime элементов в старом storage, поэтому старый pointer нельзя dereference.
+
+Scope отвечает, где имя доступно в тексте; lifetime --- когда объект
+существует runtime. Вынос адреса за scope имени не продлевает lifetime.
+
+\subsection{ASan и UBSan: наблюдаем часть UB}
+
+AddressSanitizer добавляет runtime-проверки для части out-of-bounds,
+use-after-free и use-after-scope. UndefinedBehaviorSanitizer проверяет часть
+других UB. Это instrumentation toolchain, не изменение стандарта.
+
+\begin{shellcode}
+cmake -S . -B build-sanitize -DENABLE_SANITIZER_CASES=ON \
+  -DCMAKE_BUILD_TYPE=Debug
+cmake --build build-sanitize
+./build-sanitize/raw_oob
+\end{shellcode}
+
+PASS требует реальных причин: stack-buffer-overflow, stack-use-after-scope и
+heap-use-after-free для pointer после vector reallocation. Эти программы
+намеренно имеют UB и изолированы от safe lab.
+
+\begin{warningbox}[Sanitizer не доказывает корректность]
+Instrumentation видит не все нарушения и только на выполненных путях.
+Отсутствие сообщения не доказывает отсутствие UB.
+\end{warningbox}
+
+\subsection{Производительность без лозунгов}
+
+Все три варианта дают contiguous элементы. Последовательный проход часто
+помогает cache locality, но конкретный cache --- свойство реализации и
+железа. Vector хранит metadata; обычно она мала, но стандарт не обещает layout
+или число слов. Reallocation стоит $O(n)$, reserve может уменьшить allocations,
+а проход по готовому vector может быть столь же cache-friendly, как по array.
+
+Поэтому «vector медленнее массива» не универсально. Нужно назвать operation,
+size, access pattern, compiler flags и платформу, затем измерить. Benchmark
+здесь N/A: лаборатория наблюдает семантику storage, не выдаёт нестабильные
+наносекунды за закон.
+
+\subsection{Эксперимент 1: course\_inventory}
+
+Read-only утилита в
+\texttt{examples/03\_pointers\_memory\_and\_arrays/01\_course\_inventory}
+проходит по фиксированным 15 slugs в \texttt{std::array}, реально проверяет
+lecture file/examples directory, считает байты, строки и обычные файлы.
+Измеренные строки собираются в \texttt{std::vector<BlockInfo>}.
+
+Адреса \texttt{blocks.data()} и \texttt{rows.data()} наблюдают начало двух
+contiguous областей, но не физический RAM address. Fixed input и dynamic
+results показывают выбор контейнера; reserve меняет capacity, не size.
+
+\begin{shellcode}
+cd examples/03_pointers_memory_and_arrays/01_course_inventory
+cmake -S . -B build
+cmake --build build
+./build/course_inventory --root ../../..
+./build/course_inventory --root ../../.. --block 3
+ctest --test-dir build --output-on-failure
+\end{shellcode}
+
+PASS: вывод основан на текущих файлах, totals согласованы, один блок и все
+блоки завершаются с exit code 0. Утилита ничего не изменяет.
+
+\subsection{Эксперимент 2: array\_vs\_vector\_lab}
+
+Safe executable показывает адреса raw array, оба \texttt{sizeof}, conversion,
+pointer arithmetic и one-past без dereference; затем fixed
+\texttt{std::array}; затем size/capacity, смену \texttt{data()} при vector
+reallocation и стабильность в пределах reserve.
+
+\begin{shellcode}
+cd examples/03_pointers_memory_and_arrays/02_array_vs_vector_lab
+cmake -S . -B build
+cmake --build build
+./build/array_vs_vector_lab
+ctest --test-dir build --output-on-failure
+\end{shellcode}
+
+Safe run не dereference старый pointer. Три отдельные программы намеренно
+показывают raw out-of-bounds, dangling access и vector invalidation. PASS ---
+успешный safe test и три ожидаемые sanitizer diagnostics с ненулевыми exit
+codes, а не простое наличие исходников.
+
+\subsection{Сильная сторона C++ и её цена}
+
+C++ позволяет видеть адреса и стоимость роста, затем выбрать abstraction без
+отказа от contiguous storage. Vector снимает ручное ownership, но не отменяет
+lifetime/invalidation. Raw pointers не несут ownership guarantee; свобода
+означает ответственность за границы. Производительность зависит от access
+pattern, allocations и locality, а не лозунга «низкоуровневое быстрее».
+
+\subsection{Проверка понимания}
+
+Нужно уметь объяснить:
+1) различие объекта, адреса и значения по адресу; 2) почему pointer не просто integer, а array не pointer; 3) где conversion теряет extent и почему различаются два \texttt{sizeof}; 4) границы pointer arithmetic и роль one-past; 5) отличие scope от lifetime; 6) отличие size/capacity и reserve/resize; 7) причинную связь reallocation и invalidation; 8) выбор raw array, \texttt{std::array}, \texttt{std::vector}; 9) что показывает и чего не доказывает sanitizer.
+
+\subsection{Источники для сверки}
+
+Правила lifetime, arrays, conversions, additive operators и \texttt{sizeof}
+сверены с C++17 working draft N4659. Основы сопоставлены с MIT 6.096 Lectures
+4, 5 и lifetime-фрагментами Lecture 8, но устаревшие мифы «array is pointer» и
+«pointer is just integer» исправлены. Контейнеры сверены с
+\textit{Modern C++ Tutorial}, performance context --- с ISO Technical Report
+on C++ Performance без превращения implementation facts в гарантии.

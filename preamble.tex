@@ -1,0 +1,437 @@
+% ============================================================================
+% C++ / Технологии программирования — общая преамбула конспекта
+% Движок: XeLaTeX
+% Основной стандарт примеров: C++17, если явно не указано иное.
+% ============================================================================
+
+% ---------- Язык, Unicode и шрифты ------------------------------------------
+\usepackage{fontspec}
+\usepackage{polyglossia}
+\setdefaultlanguage{russian}
+\setotherlanguage{english}
+
+\defaultfontfeatures{Ligatures=TeX,Scale=MatchLowercase}
+\setmainfont{DejaVu Serif}
+\setsansfont{DejaVu Sans}
+\setmonofont{DejaVu Sans Mono}
+
+% ---------- Геометрия и базовая типографика --------------------------------
+\usepackage[a4paper,top=20mm,bottom=22mm,left=22mm,right=18mm,headheight=15pt]{geometry}
+\usepackage{microtype}
+\usepackage{setspace}
+\usepackage{parskip}
+\usepackage{ragged2e}
+\usepackage{enumitem}
+\usepackage{titlesec}
+
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{0.55em}
+\setlist{nosep,leftmargin=2em}
+\emergencystretch=2em
+
+% ---------- Математика -------------------------------------------------------
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{mathtools}
+\usepackage{amsthm}
+
+% ---------- Цвета ------------------------------------------------------------
+\usepackage{xcolor}
+
+\definecolor{CppBlue}{HTML}{1F4E79}
+\definecolor{CppDark}{HTML}{202124}
+\definecolor{CppGray}{HTML}{5F6368}
+\definecolor{CppLightGray}{HTML}{F4F5F7}
+\definecolor{CppBorder}{HTML}{D0D7DE}
+\definecolor{CppGreen}{HTML}{2E7D32}
+\definecolor{CppOrange}{HTML}{B35C00}
+\definecolor{CppRed}{HTML}{B42318}
+\definecolor{CppPurple}{HTML}{6F42C1}
+\definecolor{CppCyan}{HTML}{006D77}
+\definecolor{CppYellowBg}{HTML}{FFF8DC}
+\definecolor{CppRedBg}{HTML}{FFF1F0}
+\definecolor{CppGreenBg}{HTML}{F1F8F3}
+\definecolor{CppBlueBg}{HTML}{EEF6FF}
+\definecolor{CppPurpleBg}{HTML}{F7F2FF}
+
+% ---------- Рисунки, таблицы, плавающие объекты -----------------------------
+\usepackage{graphicx}
+\usepackage{eso-pic}
+\usepackage{float}
+\usepackage{booktabs}
+\usepackage{tabularx}
+\usepackage{longtable}
+\usepackage{array}
+\usepackage{multirow}
+\usepackage{caption}
+\usepackage{subcaption}
+
+\graphicspath{{./}{figures/}{images/}}
+\captionsetup{font=small,labelfont=bf}
+
+\newcolumntype{Y}{>{\RaggedRight\arraybackslash}X}
+\newcolumntype{C}[1]{>{\centering\arraybackslash}p{#1}}
+\newcolumntype{L}[1]{>{\RaggedRight\arraybackslash}p{#1}}
+
+% ---------- Ссылки -----------------------------------------------------------
+\usepackage{hyperref}
+\usepackage{xurl}
+\usepackage[nameinlink,noabbrev]{cleveref}
+
+\hypersetup{
+  unicode=true,
+  colorlinks=true,
+  linkcolor=CppBlue,
+  citecolor=CppGreen,
+  urlcolor=CppPurple,
+  pdfborder={0 0 0}
+}
+
+\urlstyle{same}
+
+% ---------- Колонтитулы ------------------------------------------------------
+\usepackage{fancyhdr}
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[L]{\small\sffamily Технологии программирования и C++}
+\fancyhead[R]{\small\sffamily\nouppercase{\leftmark}}
+\fancyfoot[C]{\small\sffamily\thepage}
+\renewcommand{\headrulewidth}{0.4pt}
+\renewcommand{\footrulewidth}{0pt}
+
+% ---------- Код: listings ----------------------------------------------------
+% listings выбран намеренно без shell-escape: PDF должен собираться обычным
+% XeLaTeX. Основной код примеров — ASCII; русские пояснения даются вне листинга.
+\usepackage{listings}
+\usepackage{upquote}
+
+\lstdefinestyle{codebase}{
+  basicstyle=\ttfamily\small,
+  backgroundcolor=\color{CppLightGray},
+  frame=single,
+  rulecolor=\color{CppBorder},
+  framerule=0.5pt,
+  framesep=7pt,
+  xleftmargin=0.5em,
+  xrightmargin=0.5em,
+  breaklines=true,
+  breakatwhitespace=false,
+  postbreak=\mbox{\textcolor{CppGray}{$\hookrightarrow$}\space},
+  columns=fullflexible,
+  keepspaces=true,
+  showstringspaces=false,
+  showtabs=false,
+  tabsize=4,
+  captionpos=b,
+  aboveskip=0.9em,
+  belowskip=0.9em,
+  escapeinside={(*@}{@*)},
+  literate={~}{{\textasciitilde}}1
+           {^}{{\textasciicircum}}1
+}
+
+\lstdefinestyle{cpp}{
+  style=codebase,
+  language=C++,
+  keywordstyle=\bfseries\color{CppBlue},
+  keywordstyle=[2]\bfseries\color{CppPurple},
+  commentstyle=\itshape\color{CppGreen},
+  stringstyle=\color{CppOrange},
+  numberstyle=\scriptsize\color{CppGray},
+  numbers=left,
+  numbersep=9pt,
+  morekeywords=[2]{override,final,noexcept,nullptr,constexpr,decltype,alignas,alignof,
+                   static_assert,thread_local,concept,requires,co_await,co_yield,co_return}
+}
+
+\lstdefinestyle{cppplain}{
+  style=cpp,
+  numbers=none
+}
+
+\lstdefinestyle{shell}{
+  style=codebase,
+  language=bash,
+  numbers=none,
+  keywordstyle=\bfseries\color{CppBlue},
+  commentstyle=\itshape\color{CppGreen},
+  stringstyle=\color{CppOrange}
+}
+
+\lstdefinelanguage{CMake}{
+  sensitive=false,
+  morekeywords={cmake_minimum_required,project,add_executable,add_library,
+    target_compile_features,target_compile_options,target_include_directories,
+    target_link_libraries,set,option,if,elseif,else,endif,foreach,endforeach,
+    function,endfunction,include,find_package,enable_testing,add_test,
+    install,FetchContent_Declare,FetchContent_MakeAvailable},
+  morecomment=[l]{\#},
+  morestring=[b]"
+}
+
+\lstdefinestyle{cmake}{
+  style=codebase,
+  language=CMake,
+  numbers=left,
+  numberstyle=\scriptsize\color{CppGray},
+  numbersep=9pt,
+  keywordstyle=\bfseries\color{CppPurple},
+  commentstyle=\itshape\color{CppGreen},
+  stringstyle=\color{CppOrange}
+}
+
+\lstdefinelanguage{Diff}{
+  morecomment=[f][\color{CppGreen}]{+},
+  morecomment=[f][\color{CppRed}]{-},
+  morecomment=[f][\color{CppCyan}]{@@}
+}
+
+\lstdefinestyle{diff}{
+  style=codebase,
+  language=Diff,
+  numbers=none
+}
+
+\lstdefinestyle{output}{
+  style=codebase,
+  numbers=none,
+  basicstyle=\ttfamily\footnotesize,
+  backgroundcolor=\color{white},
+  rulecolor=\color{CppBorder}
+}
+
+% Основные окружения для вставки кода.
+\lstnewenvironment{cppcode}[1][]
+  {\lstset{style=cpp,#1}}
+  {}
+
+\lstnewenvironment{cppcodeplain}[1][]
+  {\lstset{style=cppplain,#1}}
+  {}
+
+\lstnewenvironment{shellcode}[1][]
+  {\lstset{style=shell,#1}}
+  {}
+
+\lstnewenvironment{cmakecode}[1][]
+  {\lstset{style=cmake,#1}}
+  {}
+
+\lstnewenvironment{outputcode}[1][]
+  {\lstset{style=output,#1}}
+  {}
+
+\lstnewenvironment{diffcode}[1][]
+  {\lstset{style=diff,#1}}
+  {}
+
+% Короткий inline-код. Использование: \cppinline|std::vector<int>|
+\newcommand{\cppinline}{\lstinline[style=cppplain]}
+\newcommand{\shellinline}{\lstinline[style=shell]}
+
+% ---------- Цветные смысловые блоки -----------------------------------------
+\usepackage[most]{tcolorbox}
+\tcbuselibrary{breakable,skins,theorems,listings}
+
+\newtcolorbox{importantbox}[1][Важно]{
+  enhanced,breakable,
+  colback=CppBlueBg,colframe=CppBlue,
+  boxrule=0.7pt,arc=1.5mm,
+  title={#1},fonttitle=\bfseries,
+  left=1.2mm,right=1.2mm,top=1mm,bottom=1mm
+}
+
+\newtcolorbox{warningbox}[1][Осторожно]{
+  enhanced,breakable,
+  colback=CppYellowBg,colframe=CppOrange,
+  boxrule=0.7pt,arc=1.5mm,
+  title={#1},fonttitle=\bfseries,
+  left=1.2mm,right=1.2mm,top=1mm,bottom=1mm
+}
+
+\newtcolorbox{ubbox}[1][Undefined behavior]{
+  enhanced,breakable,
+  colback=CppRedBg,colframe=CppRed,
+  boxrule=0.8pt,arc=1.5mm,
+  title={#1},fonttitle=\bfseries,
+  left=1.2mm,right=1.2mm,top=1mm,bottom=1mm
+}
+
+\newtcolorbox{practicebox}[1][Практика]{
+  enhanced,breakable,
+  colback=CppGreenBg,colframe=CppGreen,
+  boxrule=0.7pt,arc=1.5mm,
+  title={#1},fonttitle=\bfseries,
+  left=1.2mm,right=1.2mm,top=1mm,bottom=1mm
+}
+
+\newtcolorbox{performancebox}[1][Производительность]{
+  enhanced,breakable,
+  colback=CppPurpleBg,colframe=CppPurple,
+  boxrule=0.7pt,arc=1.5mm,
+  title={#1},fonttitle=\bfseries,
+  left=1.2mm,right=1.2mm,top=1mm,bottom=1mm
+}
+
+\newtcolorbox{implementationbox}[1][Типичная реализация]{
+  enhanced,breakable,
+  colback=CppLightGray,colframe=CppGray,
+  boxrule=0.7pt,arc=1.5mm,
+  title={#1},fonttitle=\bfseries,
+  left=1.2mm,right=1.2mm,top=1mm,bottom=1mm
+}
+
+\newtcolorbox{standardbox}[1][Что гарантирует стандарт]{
+  enhanced,breakable,
+  colback=white,colframe=CppCyan,
+  boxrule=0.8pt,arc=1.5mm,
+  title={#1},fonttitle=\bfseries,
+  left=1.2mm,right=1.2mm,top=1mm,bottom=1mm
+}
+
+\newtcolorbox{whybox}[1][Почему?]{
+  enhanced,breakable,
+  colback=white,colframe=CppBlue,
+  borderline west={2.2pt}{0pt}{CppBlue},
+  boxrule=0pt,arc=0mm,
+  title={#1},fonttitle=\bfseries,
+  left=2mm,right=1mm,top=1mm,bottom=1mm
+}
+
+\newtcolorbox{mistakebox}[1][Типичная ошибка]{
+  enhanced,breakable,
+  colback=CppRedBg,colframe=CppRed,
+  borderline west={2.2pt}{0pt}{CppRed},
+  boxrule=0pt,arc=0mm,
+  title={#1},fonttitle=\bfseries,
+  left=2mm,right=1mm,top=1mm,bottom=1mm
+}
+
+% ---------- Определения, утверждения, леммы ---------------------------------
+\theoremstyle{definition}
+\newtheorem{definition}{Определение}[section]
+\newtheorem{example}{Пример}[section]
+\newtheorem{exercise}{Упражнение}[section]
+
+\theoremstyle{plain}
+\newtheorem{theorem}{Теорема}[section]
+\newtheorem{lemma}{Лемма}[section]
+\newtheorem{proposition}{Утверждение}[section]
+\newtheorem{corollary}{Следствие}[section]
+
+\theoremstyle{remark}
+\newtheorem{remark}{Замечание}[section]
+
+% ---------- Алгоритмы без дополнительной зависимости algorithm2e ------------
+\newcounter{algorithmnote}[section]
+\renewcommand{\thealgorithmnote}{\thesection.\arabic{algorithmnote}}
+
+\newenvironment{algorithmnote}[1]{%
+  \refstepcounter{algorithmnote}%
+  \begin{tcolorbox}[
+    enhanced,breakable,
+    colback=white,colframe=CppDark,
+    boxrule=0.7pt,arc=1.5mm,
+    title={Алгоритм~\thealgorithmnote: #1},
+    fonttitle=\bfseries,
+    left=1.2mm,right=1.2mm,top=1mm,bottom=1mm]%
+}{%
+  \end{tcolorbox}%
+}
+
+% ---------- Небольшие семантические команды --------------------------------
+\newcommand{\Cpp}{C\texttt{++}}
+\newcommand{\CppStd}[1]{\textsf{C++#1}}
+\newcommand{\term}[1]{\textbf{#1}}
+\newcommand{\filepath}[1]{\texttt{#1}}
+\newcommand{\flag}[1]{\texttt{#1}}
+\newcommand{\command}[1]{\texttt{#1}}
+\newcommand{\keyword}[1]{\texttt{#1}}
+\newcommand{\type}[1]{\texttt{#1}}
+\newcommand{\function}[1]{\texttt{#1}}
+\newcommand{\headerfile}[1]{\texttt{<#1>}}
+
+% Метки стандарта/реализации, чтобы визуально не смешивать уровни утверждений.
+\newcommand{\standardtag}{\textsf{[standard]}}
+\newcommand{\implementationtag}{\textsf{[implementation]}}
+\newcommand{\practicetag}{\textsf{[practice]}}
+
+% ---------- Оформление заголовков -------------------------------------------
+\titleformat{\section}
+  {\Large\bfseries\sffamily\color{CppDark}}
+  {\thesection}{0.7em}{}
+
+\titleformat{\subsection}
+  {\large\bfseries\sffamily\color{CppBlue}}
+  {\thesubsection}{0.7em}{}
+
+\titleformat{\subsubsection}
+  {\normalsize\bfseries\sffamily\color{CppDark}}
+  {\thesubsubsection}{0.7em}{}
+
+% ---------- Поведение содержания --------------------------------------------
+\setcounter{tocdepth}{3}
+\setcounter{secnumdepth}{3}
+
+% ---------- cleveref: русские имена -----------------------------------------
+\crefname{definition}{определение}{определения}
+\Crefname{definition}{Определение}{Определения}
+\crefname{theorem}{теорема}{теоремы}
+\Crefname{theorem}{Теорема}{Теоремы}
+\crefname{lemma}{лемма}{леммы}
+\Crefname{lemma}{Лемма}{Леммы}
+\crefname{proposition}{утверждение}{утверждения}
+\Crefname{proposition}{Утверждение}{Утверждения}
+\crefname{corollary}{следствие}{следствия}
+\Crefname{corollary}{Следствие}{Следствия}
+\crefname{example}{пример}{примеры}
+\Crefname{example}{Пример}{Примеры}
+\crefname{exercise}{упражнение}{упражнения}
+\Crefname{exercise}{Упражнение}{Упражнения}
+\crefname{algorithmnote}{алгоритм}{алгоритмы}
+\Crefname{algorithmnote}{Алгоритм}{Алгоритмы}
+
+% ============================================================================
+% Конец общей преамбулы.
+% ============================================================================
+
+
+% ===== BEGIN ROBUST TOC NUMBER WIDTH FIX =====
+% Ширины номеров задаются напрямую через стандартные LaTeX-макросы.
+% Это не зависит от наличия пакета tocloft.
+\makeatletter
+
+% Верхний уровень: оставляем стандартный жирный стиль section,
+% но увеличиваем место под номер секции, чтобы будущие "10", "11", ... не наезжали.
+\renewcommand*\l@section[2]{%
+  \ifnum \c@tocdepth >\z@
+    \addpenalty\@secpenalty
+    \addvspace{1.0em \@plus\p@}%
+    \setlength\@tempdima{3.0em}%
+    \begingroup
+      \parindent \z@
+      \rightskip \@pnumwidth
+      \parfillskip -\@pnumwidth
+      \leavevmode \bfseries
+      \advance\leftskip\@tempdima
+      \hskip -\leftskip
+      #1\nobreak\hfil
+      \nobreak\hb@xt@\@pnumwidth{\hss #2\kern-\p@}\par
+    \endgroup
+  \fi
+}
+
+% Подраздел: 3.6em вместо стандартного узкого поля.
+% Этого достаточно для номеров 1.10, 12.18 и подобных.
+\renewcommand*\l@subsection{%
+  \@dottedtocline{2}{1.5em}{3.6em}%
+}
+
+% Подподраздел: номер может быть вида 1.3.10, поэтому поле ещё шире.
+% Отступ начинается после ширины subsection, чтобы уровни визуально не слипались.
+\renewcommand*\l@subsubsection{%
+  \@dottedtocline{3}{5.1em}{4.6em}%
+}
+
+\makeatother
+% ===== END ROBUST TOC NUMBER WIDTH FIX =====

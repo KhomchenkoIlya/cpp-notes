@@ -1,0 +1,10 @@
+# Binary assets: never run textual whitespace checks/diffs on these files.
+*.pdf binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.zip binary
+*.tar binary
+*.gz binary

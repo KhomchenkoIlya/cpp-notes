@@ -1,0 +1,348 @@
+% Lecture 10: exceptions, error contracts, and RAII
+\section{Лекция 10. Ошибки API: status, exceptions и RAII}
+\label{sec:lecture-10}
+
+До сих пор примеры в основном шли по успешному пути. Но файл может отсутствовать,
+данные могут быть испорчены, а запись --- запрещена операционной системой. Нужно
+решить, как сообщить об ошибке caller, провести её через несколько уровней и кто
+освободит уже полученные ресурсы.
+
+\begin{importantbox}[Причинная линия]
+Успешный алгоритм $\rightarrow$ ошибка $\rightarrow$ проверки status на каждом
+уровне $\rightarrow$ отделение failure path через exception $\rightarrow$ stack
+unwinding $\rightarrow$ destructors локальных objects $\rightarrow$ RAII
+$\rightarrow$ осознанный выбор error contract.
+\end{importantbox}
+
+Exceptions не «лучше» status codes. RAII также не требует exceptions: он
+обеспечивает cleanup при normal exit, early return и unwinding. Это две разные
+design decisions: как переносить failure и как владеть ресурсом.
+
+\subsection{Ошибка как часть contract API}
+
+Слово «ошибка» скрывает разные ситуации:
+обычный допустимый результат: поиск нашёл 0 совпадений; отсутствие значения в domain semantics: лекция 11 ещё не заполнена; ожидаемое recoverable condition: неверный ввод можно повторить; programming error: caller нарушил documented precondition; exceptional failure операции: обязательный отчёт нельзя прочитать; environment failure: file missing, permission denied, malformed input.
+
+Это не абсолютная классификация. Missing file может быть нормальным результатом
+поиска optional config и failure обязательной загрузки. Поэтому способ сообщения
+--- часть contract. Caller должен знать return type, возможные exceptions и
+гарантии о state после неуспеха. \texttt{assert} проверяет programming invariant
+в подходящих сборках; это не общий транспорт recoverable errors.
+
+\subsection{Baseline: явный status}
+
+В C++17 нет standard \texttt{std::expected}. Небольшому API достаточно простой
+структуры, не имитирующей целую библиотеку:
+
+\begin{cppcode}
+struct Status {
+    bool ok;
+    std::string message;
+};
+
+Status read_config(const Path& path, std::string& value);
+\end{cppcode}
+
+Полезный result передаётся через reference, а return несёт success/failure. В
+нескольких слоях появляется propagation:
+
+\begin{cppcode}
+Status transform(const Path& input, const Path& output) {
+    std::string value;
+    Status status = read_config(input, value);
+    if (!status.ok) return status;
+    // normal algorithm
+    return {true, {}};
+}
+
+int command(const Path& input, const Path& output) {
+    const Status status = transform(input, output);
+    if (!status.ok) {
+        std::cerr << status.message << '\n';
+        return 2;
+    }
+    return 0;
+}
+\end{cppcode}
+
+Плюсы: control flow виден в interface и source; частый ожидаемый исход удобно
+обрабатывать рядом. Цена: checks повторяются, пропущенная проверка теряет failure,
+normal value и error transport приходится совмещать. \texttt{[[nodiscard]]}
+помогает заметить игнорирование результата, но не проектирует result за автора.
+
+\subsection{Exceptions: синтаксис и semantics}
+
+\begin{cppcode}
+std::string read_required(const Path& path) {
+    std::ifstream input{path};
+    if (!input) {
+        throw std::runtime_error{"cannot open " + path.string()};
+    }
+    return read_value(input);
+}
+
+try {
+    build_report(path);
+} catch (const std::invalid_argument& error) {
+    std::cerr << "bad data: " << error.what() << '\n';
+} catch (const std::exception& error) {
+    std::cerr << "operation failed: " << error.what() << '\n';
+}
+\end{cppcode}
+
+\texttt{throw expression} инициализирует exception object и начинает поиск
+matching handler. После \texttt{throw} normal path текущего scope не продолжается.
+\texttt{try} отмечает guarded statements, \texttt{catch} --- handler. Более
+specific handler ставят раньше общего.
+
+Если подходящего handler в текущей функции нет, поиск продолжается во внешнем
+динамическом call chain. Промежуточный уровень обычно не ловит failure, который
+не умеет исправить. Если exception достигает верхней границы без handler,
+runtime вызывает механизм завершения, включающий \texttt{std::terminate}; это
+точнее, чем обещание «просто crash» определённого вида.
+
+Для standard hierarchy обычна форма
+\texttt{catch (const std::exception\& error)}. Reference избегает copy и slicing,
+\texttt{const} запрещает изменение, virtual \texttt{what()} даёт сообщение.
+Raw integers и strings технически допустимы, но это плохой production contract.
+Когда смысл совпадает, используют \texttt{std::runtime\_error},
+\texttt{std::invalid\_argument}; знакомый library example
+\texttt{std::out\_of\_range} бросает, например, \texttt{vector::at}.
+
+\texttt{catch (...)} совпадает с любым exception. Он нужен редко, например для
+boundary action и rethrow. Он не даёт object для \texttt{what()} и не оправдывает
+молчаливое проглатывание ошибки.
+
+\subsection{Rethrow}
+
+\begin{cppcode}
+void middle() {
+    try {
+        low_level();
+    } catch (const std::exception& error) {
+        std::cerr << "middle context: " << error.what() << '\n';
+        throw;
+    }
+}
+\end{cppcode}
+
+Пустой \texttt{throw;} внутри handler повторно бросает текущее exception и
+сохраняет его type. \texttt{throw error;} --- новый throw из expression:
+object копируется по static type expression, поэтому возможно slicing. Rethrow
+уместен, если слой добавил локальный контекст, но не способен восстановиться.
+
+\subsection{Stack unwinding и lifetime}
+
+Когда exception покидает scope, уничтожаются уже сконструированные automatic
+objects, lifetime которых заканчивается из-за выхода. Их destructors вызываются
+в порядке, обратном construction. Затем поиск handler продолжается наружу. Это
+называется \term{stack unwinding}.
+
+\begin{cppcode}
+void low() {
+    Trace low{"low"};
+    throw std::runtime_error{"deep failure"};
+}
+
+void middle() {
+    Trace middle{"middle"};
+    low();
+}
+\end{cppcode}
+
+Эксперимент печатает:
+\begin{outputcode}
++ top
++ middle
++ low
+- low
+- middle
+- top
+top boundary caught: deep failure
+\end{outputcode}
+
+Это наблюдение destructors, а не требование реализовать automatic storage как
+конкретные CPU stack frames. Standard задаёт lifetime и destruction; ABI и
+machine representation выбирает implementation.
+
+\subsection{RAII: ресурс принадлежит object lifetime}
+
+\term{RAII} --- Resource Acquisition Is Initialization. Owner получает ресурс
+при construction (или создаётся сразу в корректном owning state), хранит его и
+освобождает в destructor. Scope задаёт lifetime. Cleanup срабатывает при обычном
+выходе, early return и unwinding.
+
+Resource --- не только heap memory. Это file handle, temporary file, mutex lock,
+socket/OS handle, transaction guard или logging scope. Smart pointers --- лишь
+будущий пример RAII; для понимания механизма они не нужны.
+
+Без owner алгоритм обрастает ветками:
+
+\begin{cppcode}
+Handle h = acquire();
+if (!operation_a(h)) {
+    release(h);
+    return failure;
+}
+operation_b(h);             // may throw: кто вызовет release?
+release(h);
+\end{cppcode}
+
+С RAII основной алгоритм не отвечает за release:
+
+\begin{cppcode}
+ResourceOwner owner{acquire()};
+if (!operation_a(owner)) return failure;
+operation_b(owner);         // destructor работает и при throw
+\end{cppcode}
+
+Standard library уже использует RAII. \texttt{std::ifstream}/\texttt{ofstream}
+закрывают файл, \texttt{std::vector} и \texttt{std::string} освобождают storage.
+Не нужен wrapper без новой ответственности. Учебный \texttt{TemporaryReport}
+добавляет policy: удалить temporary artifact, если \texttt{commit} не состоялся.
+
+\subsection{RAII-owner и transactional thinking}
+
+Owner из \texttt{error\_model\_lab} открывает \texttt{report.tmp} через
+\texttt{std::ofstream}. Copy запрещена через \texttt{= delete}: два owners не
+должны владеть одним файлом. Move semantics до блока 12 не нужны, поскольку owner
+остаётся local object.
+
+При success \texttt{commit()} закрывает stream и переименовывает temporary file.
+При status early return или exception \texttt{committed\_} остаётся false;
+destructor закрывает stream и удаляет temporary path. Release не дублируется.
+
+Это transactional pattern: подготовить новое состояние отдельно, а опубликовать
+его после успеха. До commit новый report не виден; при failure temporary state
+убирается. Пример не обещает универсальную atomic replace semantics для всех OS
+и filesystems: это отдельный contract production utility.
+
+\subsection{Constructor failure}
+
+Если constructor бросает, полностью constructed object не появляется и его
+destructor не вызывается как для готового object. Уже успешно constructed
+base/member subobjects уничтожаются. Так owner получает сильный
+invariant, либо не существовать. В \texttt{TemporaryReport} stream-member уже
+создан к моменту проверки; при throw он будет уничтожен автоматически.
+
+\subsection{Destructor и exceptions}
+
+Destructor выполняется и при active unwinding. Если из destructor наружу выходит
+второй exception, пока обрабатывается первый, вызывается \texttt{std::terminate}.
+Destructors имеют связанные с bases/members implicit \texttt{noexcept} свойства;
+здесь достаточно правила: обычный cleanup destructor не должен бросать.
+
+Rollback использует filesystem overload с \texttt{std::error\_code} и не выпускает
+cleanup failure. Production code может безопасно фиксировать его в telemetry или
+дать отдельную явную \texttt{close}/\texttt{commit}, способную сообщить ошибку до
+destructor. Destructor не должен ложно обещать успешное сохранение.
+
+\subsection{Exception-safety guarantees}
+
+Guarantee описывает state после failure:
+\textbf{No-throw guarantee.:} Operation обещает не выпускать exception и выполнить свою задачу; обычный кандидат --- простой cleanup destructor; \textbf{Strong guarantee.:} Либо success, либо observable state как до operation; \textbf{Basic guarantee.:} Invariants сохранены и leaks нет, но state мог измениться; \textbf{No guarantee.:} После failure полезного обещания о state нет.
+
+В лаборатории rollback обеспечивает отсутствие нового temporary artifact и
+утечки stream на проверяемых failure paths. Prepare-then-commit даёт strong
+guarantee относительно появления нового report. Это не доказательство полной
+transaction atomicity при любом filesystem failure.
+
+\subsection{Boundary design}
+
+Полезная architecture:
+1) low-level operation бросает rich exception об I/O failure; 2) intermediate functions не ловят его без возможности восстановиться; 3) top-level \texttt{main}/command handler ловит по \texttt{const\&}; 4) boundary превращает failure в сообщение и nonzero exit code.
+
+Catch после каждого вызова уничтожил бы отделение failure path. Но ожидаемое
+«block incomplete» в course audit не exception: это \texttt{BlockResult}, который
+отчёт обязан показать. Выбран hybrid: domain-negative results являются data;
+невозможность выполнить audit переносится exception; CLI --- основная catch
+boundary. Status mode оставлен рядом для сравнения того же domain logic.
+
+\subsection{Exceptions или status: честное сравнение}
+
+\begin{center}
+\begin{tabularx}{\textwidth}{L{0.23\textwidth}YY}
+\toprule
+Критерий & Status/result & Exception \\
+\midrule
+Ожидаемая альтернатива & Явна в return type & Менее ясна как частая ветвь \\
+Propagation & Повторные checks & До matching handler \\
+Normal algorithm & Смешан с transport & Отделён от failure path \\
+Control flow & Локально виден & Non-local, требует дисциплины \\
+Cleanup & RAII работает & RAII и unwinding вызывают destructors \\
+Rich context & Нужен error type & Переносит typed object \\
+Цена & Checks на normal path & Throw path дорог; возможны tables/code size \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+Стоимость non-throwing path зависит от compiler и ABI. Реальный throw обычно
+существенно дороже return, поэтому exceptions не используют как частый loop
+control. Неверны обе крайности: «exceptions всегда медленные» и «бесплатны».
+Destructor work RAII выполняется при окончании lifetime независимо от транспорта.
+Стабильный benchmark для этого design conclusion не нужен: BENCHMARKS=N/A.
+
+\subsection{Standard library использует разные модели}
+
+\texttt{vector::at} бросает \texttt{std::out\_of\_range}. Filesystem API часто
+предлагает throwing overload и overload со \texttt{std::error\_code}. Streams по
+умолчанию имеют state flags и могут быть configured бросать по exception mask.
+Не все failures standard library обязательно throw: читают contract операции.
+
+\subsection{Эксперимент 1: error\_model\_lab}
+
+Обе версии решают одну задачу: low-level читает config, middle преобразует его и
+пишет report, top выдаёт user-facing result. Status version проверяет
+\texttt{Status} на трёх уровнях. Exception version бросает внизу, middle обычно
+не ловит, а \texttt{main} ловит по \texttt{const\&}.
+
+Modes детерминированно вызывают failure после acquisition, trace unwinding и
+handler с \texttt{throw;}. PASS: success создаёт final report; failure даёт
+ожидаемый code; temporary file удалён; trace показывает reverse destruction.
+
+\begin{shellcode}
+cd examples/10_exceptions_and_raii/error_model_lab
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug
+cmake --build build
+ctest --test-dir build --output-on-failure
+./build/error_model_lab unwind build
+./build/error_model_lab rethrow build
+\end{shellcode}
+
+\subsection{Эксперимент 2: course\_audit\_error\_boundary}
+
+Продолжение \texttt{course\_audit\_patterns} и
+\texttt{generic\_course\_audit} сохраняет domain model, но делает error policy
+явной. Utility проверяет 15 pairs. Заготовки 11--15 дают нормальные
+\texttt{INCOMPLETE}; synthetic I/O failure --- operational failure.
+
+Exception mode не размазывает catch по \texttt{line\_count}, \texttt{inspect} и
+\texttt{audit\_exception}; \texttt{main} переводит failure в сообщение и code 2.
+Status mode преобразует тот же failure в \texttt{Status}. Основная project policy
+--- hybrid, потому что она не путает future content state с I/O failure.
+
+\begin{shellcode}
+cd examples/10_exceptions_and_raii/course_audit_error_boundary
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug
+cmake --build build
+ctest --test-dir build --output-on-failure
+./build/course_audit_error_boundary --root ../../.. --transport exception
+\end{shellcode}
+
+PASS: обе transport versions проверяют 15 blocks; expected incomplete не даёт
+failure exit; synthetic I/O failure даёт nonzero code и boundary diagnostic.
+Sanitizers не применялись: manual memory ownership и намеренного UB здесь нет.
+
+\subsection{Проверка понимания}
+
+После блока нужно уметь:
+1) отличить domain result, precondition violation и operation failure; 2) объяснить \texttt{throw}, \texttt{try}, matching \texttt{catch} и поиск наружу; 3) мотивировать catch standard exception по \texttt{const\&}; 4) отличить \texttt{throw;} от \texttt{throw error;}; 5) по trace восстановить destruction при unwinding; 6) определить RAII без smart pointers и назвать разные resources; 7) объяснить cleanup при return, normal exit и exception; 8) описать constructor failure и риск throwing destructor; 9) различить no-throw, strong, basic и no guarantee; 10) выбрать status или exception по contract, frequency и boundary.
+
+\subsection{Источники для сверки}
+
+Throwing, handler matching, rethrow, termination, construction/destruction и
+exception safety сверены с C++17 working draft N4659, прежде всего clauses 15 и
+18, lifetime --- также с clause 6. RAII сопоставлен с локальными MIT 6.096
+materials по memory management и блоками 6, 8, 9. Cost claims ограничены
+implementation-dependent формулировками C++ Performance TR; build согласован с
+target-based Modern CMake. Старые материалы не использованы как modern style.

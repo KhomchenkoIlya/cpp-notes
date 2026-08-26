@@ -1,0 +1,517 @@
+% Lecture 06: Конструкторы, деструкторы и копирование
+
+\section{Лекция 6. Конструкторы, деструкторы и копирование}
+\label{sec:lecture-06}
+
+В блоке~5 \texttt{CourseBlock::inspect} сначала создавал почти пустой объект,
+а затем по одному заполнял private members. Доступ извне закрыт, но внутри
+class всё ещё существует промежуток, когда объект не представляет настоящий
+блок курса. Конструктор позволяет связать начало lifetime с установлением
+корректного начального состояния.
+
+\begin{importantbox}[Идея]
+Запись \texttt{T b = a;} обычно создаёт новый объект \texttt{b}, а не второе
+имя для \texttt{a}. У нового объекта свой lifetime и своё состояние. Чтобы
+такая value semantics была корректной, тип должен правильно определять
+создание, копирование, присваивание и уничтожение.
+\end{importantbox}
+
+\subsection{Создать объект --- значит начать его lifetime}
+
+Class задаёт собственный тип, а объект этого типа хранит значение. Для
+обычного local object определение выделяет подходящее storage, выполняет
+инициализацию, и после успешного завершения инициализации начинается lifetime.
+При выходе из scope lifetime заканчивается. Стандарт не требует описывать это
+как размещение в конкретном CPU stack frame.
+
+\begin{cppcode}
+class CourseBlock {
+public:
+    CourseBlock(int number, const std::string& slug)
+        : number_{number}, slug_{slug} {}
+
+private:
+    int number_;
+    std::string slug_;
+};
+
+CourseBlock block{6, "constructors_destructors_and_copy"};
+\end{cppcode}
+
+\texttt{CourseBlock} внутри class --- имя constructor. У него нет return type:
+даже \texttt{void} писать нельзя. Parameters задают данные, необходимые для
+начала корректного состояния. Compiler проверяет существование подходящего
+constructor, типы arguments и доступ. Runtime инициализирует subobjects
+\texttt{number\_} и \texttt{slug\_}, затем выполняет body.
+
+Здесь различим три записи:
+
+\begin{cppcode}
+Widget first;          // default initialization
+Widget second{};       // value initialization
+Widget third{42};      // direct-list-initialization
+\end{cppcode}
+
+Для class type первые две формы вызывают доступный default constructor;
+детальные различия zero/value initialization важны прежде всего для типов без
+пользовательского constructor и будут уточняться по мере необходимости.
+Форма с argument напрямую выбирает подходящий constructor. Braces также
+запрещают ряд narrowing conversions.
+
+\subsubsection{Default constructor и слово explicit}
+
+Constructor, который можно вызвать без arguments, называется default
+constructor:
+
+\begin{cppcode}
+class Counter {
+public:
+    Counter() : value_{0} {}
+private:
+    int value_;
+};
+\end{cppcode}
+
+Если class не объявляет constructors, compiler может неявно объявить default
+constructor. Но как только programmer объявил constructor с параметрами,
+автоматически получить ещё и parameterless constructor нельзя:
+
+\begin{cppcode}
+class BlockNumber {
+public:
+    explicit BlockNumber(int value) : value_{value} {}
+private:
+    int value_;
+};
+
+BlockNumber good{6};
+// BlockNumber absent; // error: default constructor отсутствует
+\end{cppcode}
+
+\texttt{explicit} у one-argument constructor запрещает использовать его как
+неявное преобразование \texttt{int -> BlockNumber}. Это естественно, когда
+число не должно незаметно становиться domain object. Подробная overload
+resolution здесь не нужна. Если пустое состояние осмысленно, default
+constructor можно объявить явно или написать \texttt{Type() = default;}.
+Добавлять его только ради удобства, разрушая invariant, не следует.
+
+\subsection{Member initializer list: сразу создать parts}
+
+После parameter list constructor стоит двоеточие и список mem-initializers:
+
+\begin{cppcode}
+CourseBlock::CourseBlock(int number, const std::string& slug)
+    : number_{number}, slug_{slug} {
+    // Здесь оба member object уже инициализированы.
+}
+\end{cppcode}
+
+Это initialization, не assignment. Members создаются до входа в body. Вариант
+«сначала создать пустую string, потом присвоить» выполнял бы другую
+последовательность операций и вообще невозможен для reference member или
+обычного \texttt{const} member:
+
+\begin{cppcode}
+class Selection {
+public:
+    Selection(const int& source, int limit)
+        : source_{source}, limit_{limit} {}
+private:
+    const int& source_;
+    const int limit_;
+};
+\end{cppcode}
+
+Reference должна быть привязана, а const object --- получить значение при
+инициализации. При этом reference не владеет referent: design обязан
+гарантировать, что тот живёт достаточно долго.
+
+\begin{warningbox}[Порядок задаёт class, а не список]
+Non-static data members инициализируются в порядке их declarations в class.
+Порядок записей после двоеточия этого не меняет. Поэтому mem-initializer list
+пишут в том же порядке: иначе visual order обманывает reader, а зависимость
+одного member от ещё не инициализированного может привести к ошибке.
+\end{warningbox}
+
+В \texttt{initializer\_order\_warning.cpp} class объявляет \texttt{first\_}
+до \texttt{second\_}, но визуально перечисляет наоборот. GCC/Clang с
+\texttt{-Wreorder} реально предупреждает, что фактический порядок иной.
+CTest требует это warning; языковое правило действует независимо от warning.
+
+При уничтожении содержащего объекта members уничтожаются в обратном порядке
+завершения их construction. Так часть, созданная позже, исчезает раньше.
+
+\subsection{Constructor как граница invariant}
+
+Плохая модель заставляет caller выполнить протокол:
+
+\begin{cppcode}
+CourseBlock block;
+block.set_number(6);
+block.set_slug("constructors_destructors_and_copy");
+block.rebuild_paths();
+\end{cppcode}
+
+Между строками существуют состояния «номер без slug» и «новая identity со
+старыми paths». Private fields плюс public setters не устраняют проблему.
+Лучше получить все обязательные данные в constructor и сразу вычислить
+dependent members. Тогда доступный public interface не создаёт
+полуинициализированный \texttt{CourseBlock}.
+
+\begin{cppcode}
+CourseBlock(const std::filesystem::path& root, int number,
+            const std::string& full_name)
+    : number_{number},
+      full_name_{full_name},
+      slug_{full_name.substr(3)},
+      lecture_path_{root / "lectures" / (full_name + ".tex")},
+      examples_path_{root / "examples" / full_name} {}
+\end{cppcode}
+
+Compiler не знает domain rule «номер от 1 до 15»; его проверяет
+implementation. Полная стратегия сообщения об ошибочном construction будет
+связана с exceptions позже. Сейчас experiment передаёт только известную
+таблицу корректных identity.
+
+\subsection{Destructor и конец lifetime}
+
+Destructor --- special member function с именем \texttt{\textasciitilde Type}:
+
+\begin{cppcode}
+class Trace {
+public:
+    explicit Trace(const std::string& name) : name_{name} {
+        std::cout << "construct " << name_ << '\n';
+    }
+    ~Trace() {
+        std::cout << "destroy " << name_ << '\n';
+    }
+private:
+    std::string name_;
+};
+\end{cppcode}
+
+У destructor нет return type и parameters. Для обычного local object он
+вызывается при выходе из scope; затем заканчивается lifetime. Перед
+освобождением storage уничтожаются members. Вложенный scope лаборатории
+делает порядок наблюдаемым, но не доказывает конкретную реализацию stack.
+
+Destructor нужен типу для завершения владения ресурсом. Его не следует
+вызывать вручную как обычную \texttt{cleanup()} function: явный вызов не
+превращает object обратно в безопасное «пустое» значение, а последующее
+автоматическое уничтожение способно нарушить lifetime rules. Ручное управление
+lifetime относится к advanced low-level code, не к практике этого блока.
+
+\begin{standardbox}[Deterministic destruction]
+Для local objects с automatic storage duration обычный выход из scope
+определяет момент destruction языковыми правилами. Это важная основа будущей
+RAII, хотя полную теорию acquisition, exceptions и smart pointers мы изучим
+позже.
+\end{standardbox}
+
+\subsection{Какие special members способен дать compiler}
+
+В фокусе четыре операции:
+default constructor; copy constructor; copy assignment operator; destructor.
+
+При выполнении условий языка compiler неявно объявляет/определяет некоторые
+из них. «Generated» не значит «ничего не делает»: операция вызывает
+соответствующие операции members. Взаимодействие правил зависит от того, что
+programmer объявил. Поэтому опасно писать один manual resource operation, не
+проверив остальные. Move constructor и move assignment существуют, но их
+семантика и Rule of Five относятся к будущему блоку.
+
+\subsection{Copy construction: появляется новый объект}
+
+Обычная форма copy constructor:
+
+\begin{cppcode}
+class Card {
+public:
+    Card(const Card& other)
+        : number_{other.number_}, title_{other.title_} {}
+private:
+    int number_;
+    std::string title_;
+};
+\end{cppcode}
+
+Reference нужна, чтобы читать source, не пытаясь сначала скопировать его для
+parameter. \texttt{const} разрешает копировать const source и обещает не
+менять его через \texttt{other}. При
+
+\begin{cppcode}
+Card a{6, "copy"};
+Card b = a;
+\end{cppcode}
+
+\texttt{b} ещё не существовал: это initialization, выбирающая copy
+constructor, несмотря на знак \texttt{=}. У \texttt{b} отдельный lifetime и
+его members копируются по copy semantics собственных типов. Copy
+\texttt{std::string} и \texttt{std::vector} создаёт независимое value:
+изменение элементов одной копии не меняет другую.
+
+Pass-by-value создаёт parameter object из argument и поэтому может вызвать
+copy. Return-by-value тоже может предполагать такую операцию на уровне
+исходного кода, но фактический отдельный вызов не всегда происходит.
+
+\subsubsection{Copy elision без подсчёта магических вызовов}
+
+Copy elision позволяет не материализовать промежуточную копию. В C++17 есть
+гарантированные случаи, где result object конструируется непосредственно в
+назначении. В других случаях compiler может применить разрешённую elision.
+Поэтому нельзя обещать: «каждый return class object вызывает один copy
+constructor».
+
+GCC/Clang flag \texttt{-fno-elide-constructors} полезен для отдельных
+наблюдений, но это experimental toolchain flag, не другая семантика C++ и не
+способ отменить гарантированные C++17 cases. Лаборатория проверяет
+независимость values, а не хрупкое универсальное число сообщений.
+
+\subsection{Copy assignment: объект уже существует}
+
+\begin{cppcode}
+class Card {
+public:
+    Card& operator=(const Card& other) {
+        number_ = other.number_;
+        title_ = other.title_;
+        return *this;
+    }
+};
+\end{cppcode}
+
+Здесь compiler видит перегруженный assignment operator. Слева уже живой
+object, его lifetime не начинается заново: состояние заменяется состоянием
+\texttt{other}. Возврат \texttt{*this} по reference --- conventional
+контрактом assignment и позволяет цепочки \texttt{a = b = c}; отдельный
+объект для результата не создаётся.
+
+\begin{cppcode}
+Card b = a; // copy construction: b создаётся
+b = a;      // copy assignment: b уже существует
+\end{cppcode}
+
+Self-assignment \texttt{b = b;} допустим. Generated assignment стандартных
+members с ним справляется. Manual resource owner иногда использует
+\texttt{if (this == \&other)}, чтобы не удалить resource до чтения из него.
+Guard не обязателен для каждого корректного operator: можно
+написать self-safe algorithm без отдельной ветви.
+
+\subsection{Shallow copy ломает уникальное владение}
+
+Рассмотрим намеренно старомодный учебный type:
+
+\begin{cppcode}
+class ShallowBuffer {
+public:
+    explicit ShallowBuffer(int value) : data_{new int{value}} {}
+    ~ShallowBuffer() { delete data_; }
+    int& value() { return *data_; }
+private:
+    int* data_; // owning raw pointer
+};
+
+ShallowBuffer first{10};
+ShallowBuffer second = first; // generated copy копирует pointer value
+\end{cppcode}
+
+Здесь pointer --- не просто доступ, а заявление: object владеет allocation и
+обязан освободить её. Generated copy выполняет memberwise copy и получает два
+одинаковых адресных значения. Оба objects считают один resource своим.
+Изменение через \texttt{second} видно через \texttt{first}; при destruction
+первый \texttt{delete} освобождает allocation, второй пытается освободить его
+ещё раз. Это double delete и undefined behavior, а не гарантированный crash.
+
+\begin{definition}
+\textbf{Shallow copy} resource-owning representation копирует handle/address,
+не создавая независимый resource. \textbf{Deep copy} создаёт новый resource и
+копирует его содержимое, сохраняя отдельное владение.
+\end{definition}
+
+Raw pointer также может быть non-owning view. Тогда он не освобождает referent,
+но copy всё равно не продлевает lifetime. Ownership должен быть понятен из
+design и документации. Naked \texttt{new}/\texttt{delete} в этом блоке
+изолированы именно для демонстрации ошибки; domain model их не использует.
+
+\subsection{Deep copy и Rule of Three}
+
+Исправленный \texttt{DeepBuffer} определяет три операции:
+
+\begin{cppcode}
+DeepBuffer(const DeepBuffer& other)
+    : size_{other.size_}, data_{new int[other.size_]} {
+    for (std::size_t i = 0; i < size_; ++i) {
+        data_[i] = other.data_[i];
+    }
+}
+
+DeepBuffer& operator=(const DeepBuffer& other) {
+    if (this == &other) {
+        return *this;
+    }
+    int* replacement = new int[other.size_];
+    for (std::size_t i = 0; i < other.size_; ++i) {
+        replacement[i] = other.data_[i];
+    }
+    delete[] data_;
+    data_ = replacement;
+    size_ = other.size_;
+    return *this;
+}
+
+~DeepBuffer() { delete[] data_; }
+\end{cppcode}
+
+Copy constructor выделяет отдельный array. Assignment сначала готовит замену,
+потом освобождает старый resource; self-assignment guard не даёт читать уже
+удалённый собственный array. Destructor освобождает ровно resource этого
+object. Полный файл проверяет, что изменения копии независимы.
+
+\begin{definition}[Rule of Three]
+Если class вручную управляет resource и ему нужен custom destructor, copy
+constructor или copy assignment, обычно необходимо внимательно рассмотреть
+все три операции.
+\end{definition}
+
+Это design guideline, не синтаксическое требование стандарта. Compiler может
+принять нарушение, как он принял \texttt{ShallowBuffer}; проблема проявится
+runtime как неправильное ownership и UB.
+
+\subsection{Rule of Zero: предпочтительный современный итог}
+
+Ту же задачу хранения последовательности умеет решать member
+\texttt{std::vector<int>}:
+
+\begin{cppcode}
+class Buffer {
+public:
+    Buffer(const std::string& label, const std::vector<int>& values)
+        : label_{label}, values_{values} {}
+private:
+    std::string label_;
+    std::vector<int> values_;
+};
+\end{cppcode}
+
+Class не пишет destructor/copy constructor/copy assignment. String и vector
+сами владеют ресурсами и корректно копируются; generated memberwise operations
+дают независимое value. Это и есть практическая мотивация Rule of Zero:
+строить обычный class из resource-managing members так, чтобы ему не требовался
+ручной код special members.
+
+Полная RAII и smart pointers будут позже. Уже сейчас вывод применим к
+\texttt{CourseBlock}: members \texttt{int}, \texttt{bool},
+\texttt{std::string}, \texttt{std::filesystem::path} и контейнеры имеют
+подходящие операции. Добавлять custom copy/destructor «потому что лекция о
+копировании» было бы лишним кодом и новой площадью для ошибок.
+
+\subsection{Стоимость value semantics}
+
+Generated не означает бесплатный:
+copy scalar members обычно дёшев и имеет постоянную стоимость; copy string/vector может выделять storage и копировать characters или elements; стоимость class copy складывается из стоимости members; deep copy buffer длины $n$ требует $O(n)$ времени и отдельной памяти; destructor owner должен освободить resource; vector value semantics имеет цену, но даёт ясное независимое владение.
+
+При copy assignment контейнер иногда переиспользует имеющуюся capacity.
+Точные allocations зависят от library implementation и текущего состояния. Поэтому
+не утверждаем конкретное число allocations без измерения. В этом блоке важна
+семантика; BENCHMARKS --- N/A. Позже move semantics позволит в подходящих
+сценариях передавать resource вместо deep copy, но её синтаксис пока не нужен.
+
+\subsection{Эксперимент 1: copy\_semantics\_lab}
+
+Каталог \texttt{01\_copy\_semantics\_lab} объединяет шесть связанных cases.
+\texttt{LessonCard} проверяет copy construction и copy assignment обычного
+value type. Копия vector меняет element и добавляет topic, не меняя source.
+\texttt{Trace} печатает constructor, copy constructor, assignment и
+destructor во вложенном scope. После строки \texttt{-- nested scope end --}
+destructors идут в обратном порядке construction.
+
+\texttt{DeepBuffer} проверяет Rule of Three, независимые allocations и
+self-assignment. \texttt{ZeroBuffer} получает ту же value semantics от string
+и vector без custom copy/destructor. Safe target должен закончить строкой
+\texttt{COPY\_SEMANTICS\_LAB=PASS}.
+
+\begin{shellcode}
+cd examples/06_constructors_destructors_and_copy/01_copy_semantics_lab
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug
+cmake --build build
+./build/copy_semantics_lab
+ctest --test-dir build --output-on-failure
+\end{shellcode}
+
+Bad shallow copy отделён opt-in option:
+
+\begin{shellcode}
+cmake -S . -B build-sanitize -DENABLE_UNSAFE_CASE=ON \
+  -DCMAKE_BUILD_TYPE=Debug
+cmake --build build-sanitize
+./build-sanitize/bad_shallow_copy
+\end{shellcode}
+
+На GCC~13 в фактическом запуске process завершился с nonzero status, а ASan
+сообщил \texttt{attempting double-free}. Это подтверждает выполненный bad
+path на этой toolchain. Отсутствие sanitizer diagnostic в другом запуске не
+доказывало бы отсутствия UB. Normal target намеренно не падает; его safe cases
+чисты и под ASan/UBSan.
+
+\subsection{Эксперимент 2: независимый inventory snapshot}
+
+\texttt{02\_inventory\_snapshot} развивает class-based inventory блока~5,
+не меняя его файлы. Constructor \texttt{CourseBlock} сразу устанавливает
+number, identity, derived paths и измеренное состояние. Затем реальные данные
+всех 15 блоков проходят две разные операции:
+
+\begin{cppcode}
+const std::vector<CourseBlock> inventory = collect_blocks(root, names);
+std::vector<CourseBlock> inventory_copy = inventory; // construction
+std::vector<CourseBlock> inventory_assigned;
+inventory_assigned = inventory;                      // assignment
+\end{cppcode}
+
+Custom special members у \texttt{CourseBlock} отсутствуют. Сравнение
+observable fields подтверждает, что generated copy сохраняет данные. Чтобы не
+портить read-only domain interface искусственным setter, для анализа введён
+отдельный \texttt{MutableBlockSnapshot}. Изменение label и vector notes в
+копии не затрагивает original; assignment второго snapshot также получает
+собственный vector. Это reusable pattern: анализировать независимый снимок,
+не воздействуя на исходную inventory.
+
+\begin{shellcode}
+cd examples/06_constructors_destructors_and_copy/02_inventory_snapshot
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug
+cmake --build build
+./build/inventory_snapshot --root ../../..
+ctest --test-dir build --output-on-failure
+\end{shellcode}
+
+PASS: 15 entries скопированы construction и assignment, исходный snapshot
+остался неизменным, программа печатает \texttt{INVENTORY\_SNAPSHOT=PASS}, оба
+CTest имеют code 0 с учётом ожидаемого rejection неверного root.
+
+\subsection{Сильные стороны и цена контроля}
+
+C++ позволяет user-defined type вести себя как обычное value. Programmer при
+необходимости точно задаёт creation, copy и destruction; deterministic
+destruction создаёт основу управления ресурсами. Composition из string/vector
+часто позволяет compiler сгенерировать правильные operations.
+
+Цена: generated shallow copy raw owner создаёт серьёзное UB; special member
+rules требуют понимания; deep copy может быть дорогим; ручные destructor и
+copy code увеличивают вероятность ошибки. Поэтому ownership должен быть
+явным, а обычный современный class по возможности стремится к Rule of Zero.
+
+\subsection{Проверка понимания}
+
+После блока нужно уметь:
+1) объяснить начало lifetime и роль constructor в invariant; 2) прочитать member initializer list и назвать настоящий порядок members; 3) объяснить вызов destructor при выходе local object из scope; 4) различить \texttt{T b = a;} и \texttt{b = a;}; 5) описать generated memberwise copy для string/vector; 6) обнаружить owning raw pointer и объяснить shallow-copy double delete; 7) прочитать deep-copy Rule-of-Three implementation и self-assignment; 8) назвать Rule of Three guideline, а не требованием синтаксиса; 9) обосновать Rule of Zero для реального \texttt{CourseBlock}; 10) интерпретировать trace, warning и настоящую ASan diagnostic; 11) оценить deep copy как $O(n)$, не называя generated copy бесплатной; 12) аккуратно учесть copy elision при наблюдении constructor calls.
+
+\subsection{Источники для сверки}
+
+Object lifetime, constructors, mem-initializers, initialization order,
+destructors, implicitly declared special members, copying и copy elision
+сверены с C++17 working draft N4659, прежде всего clauses 6, 12 и 15.
+Педагогическая последовательность constructor/destructor и ownership
+сопоставлена с MIT 6.096 Lectures~6 и~8; старые raw-pointer examples сохранены
+только как изолированная диагностика, не как modern style. Composition и
+standard-library value semantics сверены с локальным \textit{Modern C++
+Tutorial}; target-based sanitizer build --- с принятым проектом Modern CMake.

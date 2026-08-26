@@ -1,0 +1,729 @@
+% BLOCK15_STAGE2_MANAGED
+% Lecture 15: Modern C++ after C++17 and next steps
+\section{Лекция 15. Современный C++ после C++17}
+\label{sec:lecture-15}
+
+Основной стандарт курса --- C++17. К этому моменту у нас уже есть фундамент:
+типы, lifetime, RAII, value semantics, smart pointers, move semantics,
+templates, lambdas, STL, complexity и iterator invalidation.
+
+Финальная лекция отвечает на другой вопрос: \textbf{что реально добавил C++20
+поверх этой модели и зачем это понадобилось?}
+
+\begin{importantbox}[Итог]
+Новые стандарты не отменяют старые правила. Concept не исправляет плохой API,
+range не отменяет lifetime, coroutine не означает отдельный thread, а module не
+отменяет build graph. Современный C++ добавляет более точные инструменты поверх
+прежних contracts.
+\end{importantbox}
+
+\subsection{Стандарт и реальная toolchain}
+
+Нужно различать четыре вещи:
+feature входит в стандарт; compiler реализует language feature; standard library реализует library component; build system умеет корректно собрать project с этой feature.
+
+Поэтому \texttt{-std=c++20} --- необходимое, но не всегда достаточное условие.
+Особенно это заметно на modules.
+
+Поддержку проверяют по документации, feature-test macros и минимальному compile
+probe в своей toolchain.
+
+\subsection{Feature-test macros}
+
+Пример:
+
+\begin{cppcode}
+#ifdef __cpp_concepts
+static_assert(__cpp_concepts >= 201907L);
+#endif
+\end{cppcode}
+
+Macro сообщает о feature support implementation. Конкретные значения следует
+сверять с документацией/стандартными таблицами, а не запоминать навсегда.
+
+\subsection{\texttt{constexpr}: compile-time возможность, не приказ}
+
+\begin{cppcode}
+constexpr int square(int value) {
+    return value * value;
+}
+
+static_assert(square(5) == 25);
+
+int input = read_value();
+int runtime_result = square(input);
+\end{cppcode}
+
+Первый call обязан дать constant expression. Второй может быть обычным runtime
+call.
+
+\begin{warningbox}[constexpr не равно «всегда compile time»]
+Keyword разрешает constant evaluation при выполнении правил языка. Он не
+означает, что каждый вызов обязательно исчезнет из runtime.
+\end{warningbox}
+
+\subsection{Как развивался constexpr}
+
+C++11 ввёл достаточно строгий вариант. C++14/17/20 постепенно разрешали всё
+больше обычного imperative code и library operations в constant evaluation.
+
+Это делает compile-time programming похожее на обычный C++, но I/O и
+произвольные runtime resources не становятся compile-time операциями.
+
+\subsection{\texttt{if constexpr}: напоминание из C++17}
+
+\begin{cppcode}
+template <typename T>
+void print_value(const T& value) {
+    if constexpr (std::is_integral_v<T>) {
+        std::cout << "integer: " << value;
+    } else {
+        std::cout << value;
+    }
+}
+\end{cppcode}
+
+Discarded branch не требует той же well-formedness для текущего instantiation,
+что обычная runtime ветка. Это важный мост от C++17 templates к C++20 Concepts.
+
+\subsection{\texttt{consteval}: immediate function, C++20}
+
+\begin{cppcode}
+consteval int make_id(int group, int number) {
+    return group * 1000 + number;
+}
+
+constexpr int id = make_id(12, 34);
+\end{cppcode}
+
+Если relevant call не может быть constant expression, program ill-formed:
+
+\begin{cppcode}
+int x = read_value();
+// int id = make_id(1, x); // compile error
+\end{cppcode}
+
+\texttt{consteval} нужен, когда compile-time evaluation входит в
+контракта, а не просто возможностью.
+
+\subsection{\texttt{constinit}: другой contract}
+
+\begin{cppcode}
+constinit int global_counter = 0;
+++global_counter; // допустимо
+\end{cppcode}
+
+\texttt{constinit} требует static initialization для объекта со static/thread
+storage duration, но не делает object const.
+
+\begin{center}
+\begin{tabularx}{\textwidth}{L{0.20\textwidth}YY}
+\toprule
+Keyword & Смысл & Runtime mutation \\
+\midrule
+\texttt{constexpr} & constant-expression object/function capability & object нет \\
+\texttt{consteval} & immediate function & относится к calls \\
+\texttt{constinit} & static initialization requirement & может быть да \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\subsection{Static initialization order}
+
+\texttt{constinit} полезен, когда global/static object должен гарантированно
+получить static initialization. Если initializer внезапно требует dynamic
+initialization, получаем diagnostic.
+
+Но keyword не делает global mutable state хорошим design автоматически.
+
+\subsection{Почему появились Concepts}
+
+Старый generic API:
+
+\begin{cppcode}
+template <typename T>
+auto twice(const T& value) {
+    return value + value;
+}
+\end{cppcode}
+
+Из signature не видно requirement на \texttt{operator+}. Ошибка может проявиться
+глубоко в instantiation.
+
+До C++20 применяли documentation, \texttt{static\_assert}, type traits и
+SFINAE/\texttt{enable\_if}. Concepts позволяют сделать requirements частью
+interface.
+
+\subsection{Named Concept}
+
+\begin{cppcode}
+template <typename T>
+concept Numeric =
+    std::integral<T> || std::floating_point<T>;
+\end{cppcode}
+
+Concept --- compile-time predicate над template arguments, участвующий в
+constraint system.
+
+\subsection{Constrained template}
+
+\begin{cppcode}
+template <Numeric T>
+T twice(T value) {
+    return value + value;
+}
+\end{cppcode}
+
+Или:
+
+\begin{cppcode}
+template <typename T>
+requires Numeric<T>
+T twice(T value) {
+    return value + value;
+}
+\end{cppcode}
+
+Неподходящий type rejected на уровне constraints.
+
+\subsection{Abbreviated function template}
+
+\begin{cppcode}
+auto twice(Numeric auto value) {
+    return value + value;
+}
+\end{cppcode}
+
+Это всё ещё compile-time generic function, а не dynamic typing.
+
+\subsection{Requires-expression}
+
+\begin{cppcode}
+template <typename T>
+concept HasSize = requires(const T& value) {
+    { value.size() } -> std::convertible_to<std::size_t>;
+};
+\end{cppcode}
+
+Expression не выполняется runtime: compiler проверяет, корректна ли требуемая
+операция и удовлетворяет ли result constraint.
+
+\subsection{Виды requirements}
+
+Simple requirement:
+
+\begin{cppcode}
+requires(T value) {
+    ++value;
+    value++;
+}
+\end{cppcode}
+
+Type requirement:
+
+\begin{cppcode}
+requires {
+    typename T::value_type;
+}
+\end{cppcode}
+
+Compound requirement:
+
+\begin{cppcode}
+requires(const T& value) {
+    { value.size() } -> std::convertible_to<std::size_t>;
+}
+\end{cppcode}
+
+Nested requirement:
+
+\begin{cppcode}
+requires {
+    requires std::integral<T>;
+    requires sizeof(T) <= sizeof(int);
+}
+\end{cppcode}
+
+\subsection{Concepts не доказывают semantics}
+
+Compiler может проверить наличие \texttt{a < b}, но не способен из одного
+requires-expression доказать, что comparison задаёт корректный strict weak
+ordering для всех values.
+
+Semantic requirements STL из блока~\ref{sec:lecture-14} остаются частью
+контракта programmer.
+
+\subsection{Concepts и overload resolution}
+
+\begin{cppcode}
+template <typename T>
+void describe(const T&) {
+    std::cout << "generic";
+}
+
+template <std::integral T>
+void describe(const T&) {
+    std::cout << "integral";
+}
+\end{cppcode}
+
+Для integral argument constrained overload может быть выбран как более
+подходящий. Это compile-time selection, не virtual dispatch.
+
+\subsection{Concept или static\_assert}
+
+\texttt{static\_assert} хорош для invariants и локальных compile-time условий.
+
+Concept хорош, когда requirement относится к template interface и должен
+участвовать в overload resolution.
+
+Они дополняют друг друга.
+
+\subsection{Concept и runtime polymorphism}
+
+Concept описывает compile-time structural requirements. Virtual base class из
+лекции 7 --- runtime nominal polymorphism.
+
+Если нужно хранить heterogeneous objects в runtime, Concept сам по себе не
+заменяет virtual/type-erasure abstraction.
+
+\subsection{Стоимость Concepts}
+
+Сам constraint не добавляет runtime branch. Проверка происходит compile time.
+
+Но templates/constraints имеют compile-time cost: instantiations, diagnostics,
+build time и возможный рост code size для разных specializations.
+
+\subsection{Ranges: следующий слой над STL}
+
+C++17:
+
+\begin{cppcode}
+std::sort(values.begin(), values.end());
+\end{cppcode}
+
+C++20:
+
+\begin{cppcode}
+std::ranges::sort(values);
+\end{cppcode}
+
+Range interface уменьшает повторение begin/end и использует Concepts для
+формализации требований.
+
+\subsection{Ranges algorithms}
+
+\begin{cppcode}
+auto it = std::ranges::find(values, 42);
+\end{cppcode}
+
+Algorithms по-прежнему имеют complexity и iterator/range requirements. Новый
+interface не отменяет фундамент блока 14.
+
+\subsection{Projection}
+
+\begin{cppcode}
+std::ranges::sort(
+    blocks,
+    std::less{},
+    &CourseBlock::number
+);
+\end{cppcode}
+
+Projection отдельно говорит, какое поле считать sort key. Это часто проще
+comparator lambda.
+
+\subsection{Views}
+
+\begin{cppcode}
+auto selected =
+    values
+    | std::views::filter([](int x) {
+          return x % 2 == 0;
+      })
+    | std::views::transform([](int x) {
+          return x * x;
+      });
+\end{cppcode}
+
+Views обычно описывают lazy processing, не создавая промежуточный container на
+каждом шаге.
+
+\begin{warningbox}[View не означает ownership]
+View часто заимствует source. Source должен жить достаточно долго и не быть
+invalidated. Ranges не отменяют lifetime.
+\end{warningbox}
+
+\subsection{Lazy evaluation}
+
+Transformation обычно выполняется при iteration. Это может убрать лишние
+copies/allocations и позволить early termination.
+
+Но многоэтажный pipeline не всегда читабельнее простого loop. Modern syntax
+нужно выбирать по ясности и требованиям.
+
+\subsection{Borrowed ranges и dangling}
+
+Ranges library умеет выражать некоторые случаи, где iterator в уничтоженный
+temporary небезопасен, например через \texttt{std::ranges::dangling}.
+
+Это полезная защита, но не полный lifetime verifier.
+
+\subsection{\texttt{std::span}, C++20}
+
+\texttt{span} --- non-owning view на contiguous sequence:
+
+\begin{cppcode}
+int sum(std::span<const int> values) {
+    return std::accumulate(values.begin(), values.end(), 0);
+}
+\end{cppcode}
+
+Caller может передать compatible array или vector без копирования элементов.
+
+\begin{importantbox}[Span --- borrow]
+\texttt{std::span} не владеет underlying storage и не продлевает lifetime.
+Reallocation vector или уничтожение owner может сделать span dangling.
+\end{importantbox}
+
+\subsection{Static extent}
+
+\begin{cppcode}
+std::span<const int, 4> values;
+\end{cppcode}
+
+Размер может быть частью type, если fixed extent действительно часть contract.
+
+\subsection{Designated initializers, C++20}
+
+\begin{cppcode}
+struct Config {
+    int retries;
+    bool verbose;
+};
+
+Config config{
+    .retries = 3,
+    .verbose = true
+};
+\end{cppcode}
+
+Имена members повышают читаемость aggregate initialization.
+
+В C++20 designators должны идти в declaration order. Это отличается от
+некоторых C patterns.
+
+\subsection{Defaulted \texttt{operator<=>}}
+
+\begin{cppcode}
+struct Version {
+    int major;
+    int minor;
+
+    auto operator<=>(const Version&) const = default;
+};
+\end{cppcode}
+
+Для подходящего value type compiler может синтезировать comparison по members.
+
+Не каждому domain type нужен total ordering: semantics важнее удобного syntax.
+
+\subsection{\texttt{std::erase\_if}}
+
+C++17 erase-remove:
+
+\begin{cppcode}
+values.erase(
+    std::remove_if(values.begin(), values.end(), predicate),
+    values.end()
+);
+\end{cppcode}
+
+C++20:
+
+\begin{cppcode}
+std::erase_if(values, predicate);
+\end{cppcode}
+
+Новый API короче, но понимание C++17 idiom объясняет устройство старого кода и
+разделение algorithm/container mutation.
+
+\subsection{\texttt{std::string::starts\_with}}
+
+\begin{cppcode}
+if (name.starts_with("lecture_")) {
+    // ...
+}
+\end{cppcode}
+
+Новые стандарты часто добавляют маленькие library utilities. Перед написанием
+домашнего helper проверьте standard library нужной версии.
+
+\subsection{\texttt{std::source\_location}}
+
+C++20 даёт typed source-location API для logging/diagnostics:
+
+\begin{cppcode}
+void log(
+    std::string_view text,
+    std::source_location where =
+        std::source_location::current());
+\end{cppcode}
+
+Это современная альтернатива многим macro-based wrappers, но logging policy и
+стоимость всё равно проектируются отдельно.
+
+\subsection{\texttt{std::jthread}}
+
+\texttt{std::jthread} связывает thread lifetime с RAII: destructor join-ит
+joinable thread. C++20 также добавляет cooperative stop tokens.
+
+Но concurrency требует отдельного изучения memory model, data races, atomics и
+synchronization. Одной секцией это не закрыть.
+
+\subsection{Coroutines: что это}
+
+C++20 добавляет:
+\texttt{co\_await}; \texttt{co\_yield}; \texttt{co\_return}.
+
+Coroutine --- function, execution которой может suspend/resume.
+
+\begin{warningbox}[Coroutine не равно thread]
+Coroutine сама по себе не обещает background execution, parallelism или async
+I/O. Scheduler/executor/event loop --- отдельный слой.
+\end{warningbox}
+
+\subsection{Как compiler видит coroutine}
+
+Compiler концептуально превращает function в state machine и создаёт coroutine
+frame для состояния, которое должно пережить suspension.
+
+Frame может содержать parameters, locals, bookkeeping и promise object.
+Конкретный layout/allocation --- implementation detail semantics.
+
+\subsection{Promise type}
+
+Return type coroutine через coroutine protocol определяет
+\texttt{promise\_type}. Promise сообщает compiler, как создать return object,
+initial/final suspend, обработать yield/return и exception.
+
+Поэтому low-level coroutine example быстро становится разбором protocol, а не
+самой идеи suspend/resume.
+
+\subsection{\texttt{co\_await}}
+
+Awaiter protocol концептуально отвечает на три вопроса:
+готов ли result, нужно ли suspend и что вернуть после resume.
+
+В application code обычно работают с готовыми task/awaitable types framework,
+а не пишут protocol вручную в каждом месте.
+
+\subsection{\texttt{co\_yield}}
+
+Generator-like coroutine выдаёт values по одному, сохраняя state между
+возобновлениями. C++20 задаёт language mechanism, но не универсальный
+\texttt{std::generator} container-like abstraction.
+
+\subsection{Lifetime coroutine}
+
+Coroutine frame --- resource. Нужно знать:
+кто владеет handle/frame; когда вызывается destroy; какие references переживают suspension; живы ли owners borrowed objects.
+
+Современный syntax снова приводит к ownership/lifetime.
+
+\subsection{Modules: зачем}
+
+Header model основан на textual inclusion и несёт repeated parsing, macro
+leakage и сложные include dependencies.
+
+C++20 modules вводят language-level import/export model:
+
+\begin{cppcode}
+export module math;
+
+export int add(int a, int b) {
+    return a + b;
+}
+\end{cppcode}
+
+Consumer:
+
+\begin{cppcode}
+import math;
+\end{cppcode}
+
+\subsection{Module не равен precompiled header}
+
+PCH оптимизирует traditional header model. Module имеет собственную language
+semantics интерфейса/import.
+
+Они не являются одним механизмом.
+
+\subsection{Почему modules зависят от tooling}
+
+Compiler/build system должен построить dependency graph module units и
+intermediate module artifacts в корректном порядке.
+
+Поэтому module workflow изучают вместе с конкретными версиями compiler и CMake.
+В этом курсе modules остаются обзорной темой, а не фиктивной «одной командой».
+
+\subsection{Headers продолжают жить}
+
+Большой ecosystem остаётся header-based. Реальный project может смешивать
+modules, classic libraries, header-only dependencies и C APIs.
+
+Migration --- engineering decision.
+
+\subsection{Allocators}
+
+Containers имеют allocator parameter. Allocator отвечает за storage
+acquisition/release policy, но не заменяет ownership model объектов.
+
+\begin{cppcode}
+std::vector<int, MyAllocator<int>> values;
+\end{cppcode}
+
+Полный allocator model включает traits и propagation rules; это отдельная advanced тема.
+
+\subsection{\texttt{std::pmr}}
+
+Polymorphic memory resources появились уже в C++17. Они позволяют выбирать
+memory resource runtime и полезны для arena/monotonic allocation workloads.
+
+Custom memory strategy имеет смысл после измерения реальной allocation problem,
+а не «потому что быстрее».
+
+\subsection{Compile-time cost}
+
+Современные templates, Concepts и ranges могут увеличивать compiler work:
+instantiations, constraint checking, сложные view types, diagnostics.
+
+Это compile-time cost, не обязательно runtime cost.
+
+\subsection{Runtime cost нельзя угадывать по modern syntax}
+
+View может убрать промежуточный container, а может усложнить optimization.
+\texttt{std::function} может ввести indirect call. Coroutine может иметь frame.
+
+Performance проверяют profiling/benchmark/assembly, а не возрастом стандарта.
+
+\subsection{Эксперимент 1: constexpr\_and\_concepts\_lab}
+
+Каталог:
+\filepath{examples/15\_modern\_cpp\_and\_next\_steps/01\_constexpr\_and\_concepts\_lab}.
+
+Проверяется:
+\texttt{constexpr} compile-time и runtime calls; \texttt{consteval}; mutable \texttt{constinit}; standard/custom Concepts; requires-expression; constrained overload; real compile rejection для неподходящего type; real compile rejection runtime argument у \texttt{consteval}.
+
+\begin{shellcode}
+cd examples/15_modern_cpp_and_next_steps/01_constexpr_and_concepts_lab
+./run_checks.sh
+\end{shellcode}
+
+\subsection{Эксперимент 2: cpp20\_feature\_tour}
+
+Каталог:
+\filepath{examples/15\_modern\_cpp\_and\_next\_steps/02\_cpp20\_feature\_tour}.
+
+Проверяется:
+\texttt{std::ranges::sort} с projection; filter/transform views; \texttt{std::span<const int>}; designated initializers; defaulted \texttt{operator<=>}; \texttt{std::erase\_if}; \texttt{std::string::starts\_with}; real compile failure неправильного порядка designators.
+
+\begin{shellcode}
+cd examples/15_modern_cpp_and_next_steps/02_cpp20_feature_tour
+./run_checks.sh
+\end{shellcode}
+
+\subsection{Почему coroutines/modules не основные experiments}
+
+Concepts/ranges/constexpr хорошо проверяются обычным portable C++20 target.
+Modules сильнее зависят от build workflow. Coroutine protocol требует
+дополнительной library abstraction и легко уводит финальную лекцию в устройство
+\texttt{promise\_type} вместо общей картины.
+
+Поэтому их mechanics и границы разобраны честно, но без притворства, что тема
+«освоена» одним игрушечным executable.
+
+\subsection{Что появилось дальше: C++23}
+
+После C++20 развитие продолжается. Например, C++23 включает:
+\texttt{std::expected}; новые ranges facilities; \texttt{std::mdspan}; дальнейшие constexpr/library improvements.
+
+Каждую такую feature нужно явно маркировать версией стандарта.
+
+\subsection{\texttt{std::expected}: следующий error contract}
+
+В блоке 10 были status/exceptions, в блоке 13 --- optional «есть/нет».
+
+\texttt{expected<T,E>} выражает value \texttt{T} или error \texttt{E}. Это
+следующий логичный шаг, когда caller обязан узнать причину failure.
+
+\subsection{Как читать новую feature}
+
+Рабочий алгоритм:
+1) определить проблему старого подхода; 2) узнать standard/version; 3) прочитать semantics; 4) проверить ownership/lifetime; 5) понять compile/runtime cost; 6) сделать минимальный compile experiment; 7) только потом использовать в production.
+
+\subsection{Что должно остаться после курса}
+
+Нужно уметь объяснить:
+declaration/definition и compile/link/runtime errors; object lifetime, ownership, pointer/reference/const contracts; RAII, copy/move и value categories; runtime и compile-time polymorphism; templates и Concepts; exception boundaries; lambdas/callables; STL container/iterator/algorithm contracts; complexity и invalidation; зачем ranges/Concepts появились после C++17.
+
+\subsection{Дальше: concurrency}
+
+Следующая самостоятельная область:
+threads, mutexes, condition variables, atomics, happens-before, memory ordering,
+lock-free structures, schedulers/executors.
+
+Её нельзя безопасно изучить только через «запустили два thread».
+
+\subsection{Дальше: performance engineering}
+
+Profiling, hardware counters, cache behavior, branch prediction, vectorization,
+assembly, allocation profiling и realistic benchmarks.
+
+Сначала измерение, затем optimization.
+
+\subsection{Дальше: library/API design}
+
+ABI/API boundaries, pImpl, type erasure, customization points, error models,
+ownership across library boundaries, allocator-aware design и versioning.
+
+\subsection{Дальше: advanced templates}
+
+Variadic templates, fold expressions, advanced traits, specialization,
+constexpr algorithms и policy-based design.
+
+Concepts помогают выразить requirements, но не отменяют эти механизмы.
+
+\subsection{Дальше: tooling}
+
+Warnings, tests, sanitizers, debugger, static analysis, formatter, CMake, CI и
+profiling остаются частью профессионального C++, а не внешним дополнением к
+языку.
+
+\subsection{Что значит знать современный C++}
+
+Не помнить все keywords, а уметь:
+выбрать простейший корректный abstraction; понимать owner/lifetime; понимать value/reference semantics; читать diagnostics; знать complexity contract; различать compile-time и runtime mechanisms; проверять support стандарта; измерять performance claims.
+
+\subsection{Совместимость проекта}
+
+Если основной project обещает C++17, C++20 experiments отделяют явно:
+отдельный CMake project/target; \texttt{cxx\_std\_20}; README с required standard; отсутствие C++20 API в C++17 targets.
+
+\subsection{Финальный checklist новой feature}
+
+Перед использованием спросите:
+1) какую проблему решает; 2) в каком стандарте появилась; 3) поддерживает ли toolchain; 4) какие compile-time requirements; 5) какие lifetime/runtime consequences; 6) есть ли более простое решение; 7) улучшает ли новый вариант contract; 8) как его тестировать.
+
+\begin{importantbox}[Финальный вывод курса]
+C++ остаётся языком явных trade-offs. Новые стандарты дают больше способов
+выразить намерение compile time и точнее ограничить generic code, но фундамент
+остаётся тем же: lifetime, ownership, types, contracts, algorithms, complexity
+и tooling. Если основы понятны, новые стандарты перестают быть списком
+магических keywords.
+\end{importantbox}
+
+На этом базовая линия из 15 блоков завершена. Дальше выбирайте отдельную
+ветку --- concurrency, performance, library design, networking, graphics,
+embedded C++ или другую предметную область --- и строить её тем же способом:
+theory, runnable experiments, diagnostics и проверяемые guarantees.

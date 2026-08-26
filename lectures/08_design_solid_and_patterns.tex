@@ -1,0 +1,242 @@
+% Lecture 08: Design, SOLID, and patterns
+\section{Лекция 8. Design, SOLID и паттерны}
+\label{sec:lecture-08}
+
+В блоке~7 мы получили runtime polymorphism. Но корректный синтаксис ещё не
+даёт удобный design: программа может компилироваться и заставлять менять один
+центральный \texttt{switch} при каждом новом требовании.
+
+\begin{importantbox}[Главная причинная цепочка]
+Простой работающий design $\rightarrow$ новое требование $\rightarrow$
+неудобные связи $\rightarrow$ design pressure $\rightarrow$ pattern и его
+цена. Pattern --- повторяемая идея взаимодействия объектов, не готовый кусок
+синтаксиса C++.
+\end{importantbox}
+
+\subsection{Design после синтаксиса}
+
+\textbf{Responsibility} --- связная обязанность и осмысленная причина менять
+модуль. \textbf{Cohesion} высока, когда его данные и операции служат этой
+обязанности. \textbf{Coupling} показывает, сколько одна часть знает о другой.
+\textbf{Dependency} означает, что одной части нужна другая. \textbf{Interface}
+задаёт контракт, \textbf{implementation detail} можно менять за ним, а
+\textbf{extension point} принимает ожидаемый новый вариант.
+
+Например, checkout с формулами всех скидок зависит от каждой policy. Checkout,
+вызывающий \texttt{PricingStrategy::price}, зависит от узкого interface;
+формула стала detail. Coupling не исчез, но dependency направлен к более
+стабильной abstraction. Главный тест design --- изменение требований.
+
+\subsection{SOLID --- карта проблем, не догма}
+
+SOLID --- guidelines design, не требования стандарта C++ и не законы языка.
+Compiler не способен полностью проверить их смысл.
+
+\paragraph{SRP.} Single Responsibility Principle: class/module имеет одну
+связную responsibility, один осмысленный reason to change. Это не «один method
+на class». Несколько измерений \texttt{CourseBlock} связны; чтение filesystem,
+выбор policy и три формата вывода имеют разные причины изменения. Разделение
+повышает cohesion, но лишние классы для одноразовой функции только мешают.
+
+\paragraph{OCP.} Open/Closed Principle: стабильный central code желательно
+расширять вариантами без постоянного редактирования. Абсолютной закрытости нет:
+интерфейс и требования меняются. Extension point создают лишь на ожидаемой
+оси вариативности; иначе это speculative complexity.
+
+\paragraph{LSP.} Liskov Substitution Principle связывает design с блоком~7:
+derived сохраняет base contract. Если pricing interface обещает
+неотрицательную цену, override с \texttt{-1} ломает ожидание client, хотя
+signature корректна. Compiler проверяет \texttt{override}, но не поведенческий
+смысл. Client не должен делать исключения по concrete subtype.
+
+\paragraph{ISP.} Interface Segregation Principle: client не зависит от
+операций большого interface, которые ему не нужны. Result observer требует
+\texttt{on\_result}, но не \texttt{save\_html} и \texttt{set\_color}. Маленькие
+целевые interfaces полезны при разных clients; дробить interface без причины
+тоже не нужно.
+
+\paragraph{DIP.} Dependency Inversion Principle: high-level policy не
+привязана жёстко к low-level implementation; обе зависят от abstraction.
+Простейшая dependency injection --- constructor parameter:
+\begin{cppcode}
+explicit Checkout(const PricingStrategy& strategy) : strategy_{strategy} {}
+\end{cppcode}
+DI container/framework не требуется. Reference non-owning: strategy должна
+жить дольше checkout.
+
+\subsection{Strategy: независимо заменяемая policy}
+
+Baseline с двумя стабильными вариантами честен:
+\begin{cppcode}
+int direct_price(int base, PricePolicy policy) {
+    switch (policy) {
+    case PricePolicy::regular: return base;
+    case PricePolicy::student: return base * 80 / 100;
+    }
+    return base;
+}
+\end{cppcode}
+Pressure появляется, когда algorithms добавляются независимо, выбираются
+runtime, а central switch приходится править для каждого варианта.
+
+\begin{cppcode}
+class PricingStrategy {
+public:
+    virtual ~PricingStrategy() = default;
+    virtual int price(int base) const = 0;
+};
+class StudentPricing final : public PricingStrategy {
+public:
+    int price(int base) const override { return base * 80 / 100; }
+};
+\end{cppcode}
+
+\texttt{PricingStrategy} --- Strategy, конкретные тарифы ---
+ConcreteStrategy, \texttt{Checkout} --- Context. Caller выбирает object, а
+стабильный Context знает только abstraction. Compiler проверяет hierarchy,
+pure virtual contract и \texttt{override}; runtime virtual dispatch выбирает
+реализацию по dynamic type. Templates будут в блоке~9 и здесь не являются
+основным механизмом.
+
+В лаборатории automatic strategy живёт дольше Context; \texttt{const\&} не
+владеет ею. Цена: extra object/type, indirection и обычно один virtual call.
+Allocation не обязательна. Для короткого неизменного switch Strategy хуже.
+В hot path стоимость измеряют; вне него design value часто важнее одного call.
+
+\subsection{Factory Method: выбор product у creator hierarchy}
+
+Constructor, helper \texttt{make\_x} и simple factory с одним switch могут
+быть хороши, но это не GoF Factory Method. Здесь pressure иной: общий алгоритм
+Creator работает через Product interface, а ConcreteCreator решает, какой
+ConcreteProduct предоставить.
+
+\begin{cppcode}
+class ReportCreator {
+public:
+    std::string publish(const std::string& title) const {
+        const Product& product = create_product();
+        return title + " -> " + product.format(title);
+    }
+protected:
+    virtual const Product& create_product() const = 0;
+};
+\end{cppcode}
+
+\texttt{Product} --- interface; \texttt{TextProduct}/\texttt{HtmlProduct} ---
+ConcreteProduct; \texttt{ReportCreator} --- Creator с factory method
+\texttt{create\_product}; два derived creators --- ConcreteCreator. Именно
+creator polymorphism, а не слово \texttt{create}, делает пример Factory Method.
+
+Каждый ConcreteCreator владеет product как member и возвращает
+\texttt{const Product\&}. Reference non-owning и действительна лишь пока жив
+creator. Heap allocation не нужна. Production factory часто возвращает owning
+smart pointer, но ownership tools относятся к блоку~11. Цена --- две
+hierarchies, virtual calls, types и lifetime contract. Для одного product
+constructor/helper проще.
+
+\subsection{Observer: publisher не знает всех получателей}
+
+Baseline publisher напрямую вызывает A, B и C. Новый receiver требует менять
+publisher. Pressure: несколько независимо добавляемых consumers реагируют на
+одно event.
+\begin{cppcode}
+class Observer {
+public:
+    virtual ~Observer() = default;
+    virtual void on_completed(const std::string& job, int result) = 0;
+};
+void subscribe(Observer& observer) { observers_.push_back(&observer); }
+std::vector<Observer*> observers_; // non-owning
+\end{cppcode}
+
+Subject/Publisher хранит registry abstractions; ConcreteObserver реализует
+effect; event --- завершение job; \texttt{notify} вызывает каждого receiver.
+Automatic observers обязаны жить дольше регистрации и notify. Subject ничего
+не удаляет. Уничтоженный observer оставит dangling pointer и возможное UB.
+В долгоживущей системе нужен unsubscribe/registration design. Smart pointers
+не универсальное лекарство: shared ownership тоже имеет цену и cycles.
+
+Notify стоит $O(n)$ virtual calls и storage для $n$ observers; появляются
+вопросы порядка callbacks и reentrancy. Для одного постоянного receiver прямой
+call честнее.
+
+\subsection{Pattern, feature, library и композиция}
+
+\texttt{virtual}, inheritance, pointer и reference --- language features.
+Strategy, Factory Method и Observer --- patterns, реализуемые этими features.
+Позже возможны templates, lambdas, \texttt{std::function} и smart pointers;
+реализация не меняет design pressure. Patterns можно сочетать, но не обязаны:
+Strategy выбирает policy, Observer сообщает результат, Factory Method иногда
+делегирует product creator. «Паттерн-комбайн» без потребности не нужен.
+
+\subsection{Эксперимент 1: patterns\_lab}
+
+\texttt{01\_patterns\_lab} проверяет direct switch и две strategies с общим
+workflow и разными totals; общий \texttt{Creator::publish} через два creators
+и products; два events для console/statistics observers. Контрольный case
+оставляет стабильный двухвариантный выбор обычным conditional.
+\begin{shellcode}
+cd examples/08_design_solid_and_patterns/01_patterns_lab
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug
+cmake --build build
+./build/patterns_lab
+ctest --test-dir build --output-on-failure
+\end{shellcode}
+PASS: отдельные markers \texttt{STRATEGY\_CASE},
+\texttt{FACTORY\_METHOD\_CASE}, \texttt{OBSERVER\_CASE},
+\texttt{SIMPLE\_CASE} и итоговый \texttt{PATTERNS\_LAB=PASS}; exit code~0.
+
+\subsection{Эксперимент 2: course\_audit\_patterns}
+
+Read-only utility исследует реальные 15 pairs. \texttt{AuditEngine} зависит
+от \texttt{AuditStrategy}. Structural проверяет наличие pair, Strict --- ещё
+непустую лекцию и examples. Третья, lecture-only policy, локально проверяет
+расширяемость: она добавлена без правки engine workflow.
+
+Три observers получают каждый result: console summary, issue detail и
+statistics. Engine не знает concrete effects. Strategies и observers созданы
+раньше engine, поэтому его non-owning references/pointers действительны.
+\begin{shellcode}
+cd examples/08_design_solid_and_patterns/02_course_audit_patterns
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug
+cmake --build build
+./build/course_audit_patterns --root ../../.. --policy structural
+./build/course_audit_patterns --root ../../.. --policy strict
+ctest --test-dir build --output-on-failure
+\end{shellcode}
+Structural ожидает 15 pairs. Strict честно находит готовые 01--08 и семь
+будущих incomplete blocks. PASS означает 15 доставленных events и ожидаемый
+итог policy, а не готовность блоков 09--15.
+
+Factory Method здесь сознательно не применён: CLI choice короток, objects
+локальны, общего polymorphic Creator algorithm нет. Добавление creator/product
+hierarchies было бы overengineering.
+
+\subsection{SOLID-аудит практики}
+SRP: inspection, evaluation и reporting разделены; \texttt{main} остаётся уместным composition root; OCP: strategy и observer добавляются к неизменному engine; CLI mapping для нового пользовательского имени всё же меняется; LSP: каждая policy выдаёт осмысленный result для любого block, каждый observer принимает любое событие без проверки concrete publisher; ISP: два interfaces узки под настоящих clients; дальше дробить незачем; DIP: high-level engine зависит от abstractions, injection выполнена reference parameter и \texttt{subscribe}, без framework.
+
+\subsection{Overengineering и cost model}
+
+Pattern добавляет objects, types, pointer/reference indirection, virtual
+dispatch, code size и compile complexity. Factory Method не требует heap;
+Observer notify имеет $O(n)$; Strategy runtime обычно даёт одну дополнительную
+indirection. Обычная реализация virtual использует vtable/vptr, но стандарт
+не требует такого layout. Performance зависит от implementation и hot path:
+неверны и «паттерны медленные», и «нулевая стоимость» без контекста.
+
+Если два варианта не меняются, switch может быть яснее. Abstraction без
+variation point --- unnecessary complexity. Хороший design минимален для
+текущих и ожидаемых требований; pattern не самоцель.
+
+\subsection{Проверка понимания}
+После блока нужно уметь объяснить все пять SOLID как guidelines; начать с
+baseline и назвать pressure; отличить Factory Method от helper; назвать роли
+трёх patterns; доказать non-owning lifetime; отделить pattern от feature;
+оценить trade-offs и отказаться от pattern, когда direct code проще.
+
+\subsection{Источники для сверки}
+Virtual calls, abstract classes, references и lifetime сверены с C++17 draft
+N4659 (clauses~6, 10, 12, 15). OOP background сопоставлен с MIT 6.096
+Lecture~7 и лекциями~5--7. Strategy, Factory Method и Observer употреблены в
+каноническом GoF смысле; cost context --- с локальным C++ Performance TR,
+target-based сборка --- с Modern CMake.

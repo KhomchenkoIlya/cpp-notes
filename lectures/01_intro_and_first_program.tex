@@ -1,0 +1,473 @@
+\section{Лекция 1. Введение в C++ и первая программа}
+\label{sec:lecture-01}
+
+Первая лекция нужна не для того, чтобы выучить много синтаксиса.
+Наша задача --- построить правильную картину: что такое исходный
+код, кто превращает его в исполняемую программу, зачем языку типы и как уже
+на первом занятии пользоваться простыми полезными абстракциями стандартной
+библиотеки.
+
+\begin{importantbox}[Что нужно уметь после лекции]
+Создать файл \texttt{.cpp}, собрать его через \texttt{g++}, запустить программу,
+объяснить каждую строку простого \texttt{main}, пользоваться базовыми типами,
+понимать целочисленное деление и простые неявные преобразования, а также
+использовать \texttt{std::string}, \texttt{std::vector} и \texttt{std::map}
+на уровне их основного контракта.
+\end{importantbox}
+
+\subsection{От задачи к машинному коду}
+
+Процессор не выполняет строку
+
+\begin{cppcodeplain}
+std::cout << "Hello!\n";
+\end{cppcodeplain}
+
+непосредственно. В конечном счёте он исполняет машинные инструкции конкретной
+архитектуры. Язык программирования позволяет описывать вычисление на более
+высоком уровне: через типы, операции, функции и готовые абстракции.
+
+\begin{definition}
+\textbf{Исходный код} --- текст программы, написанный программистом.
+Для C++ исходные файлы часто имеют расширение \texttt{.cpp}.
+\end{definition}
+
+\begin{definition}
+\textbf{Компилятор} --- программа, которая анализирует исходный код и переводит
+его в другую форму. В типичном C++ toolchain результат нескольких стадий
+становится машинным кодом для выбранной платформы.
+\end{definition}
+
+\begin{whybox}[Компилятор против интерпретатора]
+Деление языков на «компилируемые» и «интерпретируемые» работает только как
+первое приближение. Реальные реализации могут использовать байткод, JIT и
+смешанные схемы. Для нас важно, что обычная C++-сборка заранее создаёт
+нативный executable, а компилятор получает информацию о типах до запуска.
+\end{whybox}
+
+\subsection{Почему C++}
+
+C++ интересен сочетанием высокоуровневых абстракций и достаточно прямого
+контроля над стоимостью программы. Можно говорить «динамическая
+последовательность чисел» через \texttt{std::vector}, а позже при
+необходимости разбираться с размещением памяти, временем жизни и машинным
+кодом.
+
+\begin{performancebox}
+Нельзя делать вывод «программа быстрая, потому что она написана на C++».
+Скорость зависит от алгоритма, структуры данных, аллокаций, кэшей,
+оптимизатора, ввода-вывода и железа. Полезная идея C++ --- абстракция
+не обязана означать большую runtime-стоимость.
+\end{performancebox}
+
+\subsection{Практический pipeline сборки}
+
+Одна команда
+
+\begin{shellcode}
+g++ main.cpp -o program
+\end{shellcode}
+
+скрывает несколько разных этапов. Для обучения удобно видеть цепочку
+
+\begin{center}
+\texttt{main.cpp}
+$\rightarrow$
+\texttt{preprocessing}
+$\rightarrow$
+\texttt{assembly}
+$\rightarrow$
+\texttt{object file}
+$\rightarrow$
+\texttt{linking}
+$\rightarrow$
+\texttt{executable}.
+\end{center}
+
+\subsubsection{Preprocessing}
+
+До основной компиляции обрабатываются директивы препроцессора, например
+
+\begin{cppcodeplain}
+#include <iostream>
+\end{cppcodeplain}
+
+На первом уровне понимания этого достаточно: после обработки заголовка
+объявления стандартного потокового ввода-вывода становятся доступны текущей
+единице трансляции.
+
+\begin{mistakebox}[Что не надо говорить]
+Фраза «\texttt{\#include} подключает библиотеку» смешивает разные стадии.
+Заголовок участвует в preprocessing, а связывание с уже скомпилированным кодом
+происходит на стадии linking.
+\end{mistakebox}
+
+\subsubsection{Object file и linker}
+
+После анализа C++ компилятор может сгенерировать assembly, а assembler ---
+объектный файл. Объектный файл уже содержит машинный код, но часто ещё имеет
+неразрешённые ссылки на другие части программы и библиотеки.
+
+\begin{definition}
+\textbf{Линкер} связывает объектные файлы и библиотеки, разрешает внешние ссылки
+и создаёт итоговый executable или библиотеку.
+\end{definition}
+
+\begin{standardbox}
+Стандарт C++ определяет translation units и фазы трансляции, но не требует,
+чтобы реализация буквально сохраняла промежуточные \texttt{.ii},
+\texttt{.s} и \texttt{.o}. Мы создаём их специально, чтобы увидеть устройство
+конкретного toolchain.
+\end{standardbox}
+
+\begin{practicebox}[Эксперимент 1: разобрать сборку по частям]
+Файл \texttt{examples/01\_intro\_and\_first\_program/01\_compilation\_pipeline/inspect.sh}
+отдельно запускает preprocessing, генерацию assembly, создание object file и
+linking. После эксперимента команда \texttt{g++} перестаёт быть магической
+кнопкой.
+\end{practicebox}
+
+\subsection{Hello, World! по строкам}
+
+\begin{cppcode}
+#include <iostream>
+
+int main() {
+    std::cout << "Hello, World!\n";
+    return 0;
+}
+\end{cppcode}
+
+\texttt{\#include <iostream>} --- директива preprocessing.
+Заголовок \texttt{iostream} предоставляет интерфейс стандартных потоков.
+
+\texttt{main} --- особая функция обычной C++-программы: с неё начинается
+выполнение пользовательского кода после необходимой работы среды выполнения.
+
+Слово \texttt{int} означает, что функция возвращает целое значение.
+Для \texttt{main} это код завершения программы.
+
+\texttt{std::cout} --- стандартный поток вывода. Префикс \texttt{std::}
+указывает пространство имён стандартной библиотеки.
+
+\begin{warningbox}[Почему сразу пишем std::]
+В старых учебных примерах часто встречается \texttt{using namespace std;}.
+Конструкция допустима, но как основной стиль она скрывает происхождение имён
+и может создавать конфликты. В этом конспекте стандартные имена по умолчанию
+пишутся явно: \texttt{std::cout}, \texttt{std::string}, \texttt{std::vector}.
+\end{warningbox}
+
+Оператор \texttt{<<} передаёт значение в поток вывода. Позже мы увидим, что
+это перегруженный оператор; пока важен его контракт.
+
+Текст в двойных кавычках --- строковый литерал.
+Последовательность \texttt{\textbackslash n} обозначает перевод строки.
+
+\texttt{return 0;} завершает функцию и сообщает об успешном завершении.
+Достижение конца \texttt{main} без явного \texttt{return} также считается
+успешным, но на первых примерах оставим возврат видимым.
+
+\subsection{Первая команда компиляции}
+
+\begin{shellcode}
+g++ -std=c++17 -Wall -Wextra -Wpedantic hello.cpp -o hello
+\end{shellcode}
+
+Здесь:
+
+\textbf{\texttt{g++}:} C++-драйвер GCC; \textbf{\texttt{-std=c++17}:} используем стандарт C++17; \textbf{\texttt{-Wall}:} включаем большой набор полезных предупреждений; \textbf{\texttt{-Wextra}:} включаем дополнительные предупреждения; \textbf{\texttt{-Wpedantic}:} просим предупреждать об отклонениях от стандарта; \textbf{\texttt{-o hello}:} задаём имя результата.
+
+\begin{warningbox}
+Название \texttt{-Wall} не означает буквально «все предупреждения GCC».
+Поэтому полезные группы warnings часто комбинируют.
+\end{warningbox}
+
+Запуск в Linux:
+
+\begin{shellcode}
+./hello
+\end{shellcode}
+
+Префикс \texttt{./} явно указывает текущий каталог. Обычно shell ищет команды
+в каталогах из \texttt{PATH}, а текущий каталог туда не включён.
+
+\subsection{Из чего состоит строка C++}
+
+Рассмотрим
+
+\begin{cppcodeplain}
+int age = 20;
+\end{cppcodeplain}
+
+\texttt{int} --- keyword, \texttt{age} --- identifier,
+\texttt{20} --- literal, \texttt{=} --- operator,
+\texttt{;} --- punctuation.
+
+Комментарии нужны для неочевидной причины, а не для пересказа кода.
+
+\begin{cppcodeplain}
+// Плохо: увеличиваем count на один.
+count += 1;
+\end{cppcodeplain}
+
+Хороший комментарий объясняет, почему увеличение происходит здесь или какой
+инвариант мы поддерживаем.
+
+\subsection{Типы как информация о значениях и операциях}
+
+\begin{cppcode}
+int age = 20;
+double temperature = 36.6;
+char grade = 'A';
+bool passed = true;
+\end{cppcode}
+
+\begin{definition}
+\textbf{Тип} определяет множество допустимых значений и операций, которые
+имеют смысл для объекта или выражения.
+\end{definition}
+
+Тип нужен не только человеку: он сообщает компилятору, как трактовать данные,
+какие операции разрешены и какие преобразования возможны.
+
+Для первой лекции достаточно знать группы:
+
+\texttt{bool}; символьный \texttt{char}; целые \texttt{short}, \texttt{int}, \texttt{long}, \texttt{long long} и unsigned-варианты; \texttt{float}, \texttt{double}, \texttt{long double}.
+
+\begin{standardbox}[Не запоминаем int = 4 байта как закон языка]
+На современных desktop-системах это часто так, но стандарт не определяет
+\texttt{int} фразой «четырёхбайтовое целое». Конкретный размер относится к
+реализации и платформе.
+\end{standardbox}
+
+\begin{warningbox}[double не равен множеству вещественных чисел]
+Floating-point хранит конечное множество представимых значений. Многие
+десятичные дроби нельзя представить точно, поэтому появляются ошибки
+округления. Подробно вернёмся к этому позже.
+\end{warningbox}
+
+\subsection{Инициализация и арифметика}
+
+\begin{cppcode}
+int count = 5;
+double price{12.5};
+\end{cppcode}
+
+Фигурная инициализация полезна тем, что запрещает ряд сужающих преобразований,
+например попытку записать \texttt{3.14} непосредственно в \texttt{int}.
+
+Базовые арифметические операции:
+
+\begin{cppcode}
+int a = 10;
+int b = 3;
+
+int sum = a + b;       // 13
+int product = a * b;   // 30
+int quotient = a / b;  // 3
+int rest = a % b;      // 1
+\end{cppcode}
+
+Самый важный ранний пример:
+
+\begin{cppcode}
+int x = 7 / 2;         // 3
+double y = 7.0 / 2.0; // 3.5
+\end{cppcode}
+
+\begin{whybox}[Почему 7 / 2 даёт 3]
+Оба операнда целые, поэтому выполняется целочисленное деление.
+В \texttt{7.0 / 2.0} операнды floating-point, поэтому операция другая.
+\end{whybox}
+
+Ещё важнее:
+
+\begin{cppcode}
+int a = 1;
+int b = 4;
+
+double wrong = a / b;       // 0.0
+double right = 1.0 * a / b; // 0.25
+\end{cppcode}
+
+В первой строке сначала вычисляется целочисленное \texttt{1 / 4}, получается
+\texttt{0}, и только затем ноль превращается в \texttt{double}.
+Тип переменной слева не меняет задним числом семантику выражения справа.
+
+\subsection{Сравнения и простые преобразования}
+
+Операторы \texttt{==}, \texttt{!=}, \texttt{<}, \texttt{<=}, \texttt{>},
+\texttt{>=} дают значение типа \texttt{bool}.
+
+\begin{cppcode}
+int age = 20;
+bool adult = age >= 18;
+\end{cppcode}
+
+C++ также выполняет неявные преобразования:
+
+\begin{cppcode}
+int whole = 5;
+double real = whole;  // 5 -> 5.0
+\end{cppcode}
+
+Обратное направление может терять информацию:
+
+\begin{cppcode}
+double real = 3.9;
+int whole = real;  // дробная часть теряется
+\end{cppcode}
+
+Неявное преобразование --- конкретная операция с правилами, а не «магическая
+совместимость типов».
+
+\subsection{Ввод и вывод}
+
+\begin{cppcode}
+#include <iostream>
+
+int main() {
+    int age{};
+
+    std::cout << "Enter age: ";
+    std::cin >> age;
+
+    std::cout << "Age: " << age << '\n';
+    return 0;
+}
+\end{cppcode}
+
+\texttt{std::cin >> age} просит поток ввода разобрать следующее значение как
+\texttt{int}. Обработку ошибочного ввода пока откладываем: для неё нужны
+управляющие конструкции.
+
+\subsection{Первая стандартная абстракция: std::string}
+
+\begin{cppcode}
+#include <string>
+
+std::string language{"C++"};
+std::cout << language << '\n';
+std::cout << language.size() << '\n';
+\end{cppcode}
+
+Пока читаем \texttt{language.size()} как «спросить у объекта длину».
+Полный механизм методов появится вместе с классами.
+
+\subsection{std::vector: последовательность однотипных значений}
+
+\begin{cppcode}
+#include <vector>
+
+std::vector<int> numbers{10, 20, 30};
+
+std::cout << numbers[0] << '\n';
+std::cout << numbers.size() << '\n';
+
+numbers.push_back(40);
+\end{cppcode}
+
+\texttt{std::vector<int>} пока читаем буквально как
+«vector, элементы которого имеют тип int». Почему тип записан в угловых
+скобках, объяснит лекция о шаблонах.
+
+\begin{importantbox}
+\texttt{vector} даёт абстракцию изменяемой последовательности однотипных
+элементов и сам управляет необходимыми ресурсами. Поэтому мы можем решать
+задачи с последовательностями до изучения ручного управления памятью.
+\end{importantbox}
+
+Индексация начинается с нуля. \texttt{operator[]} не проверяет границы
+автоматически; к последствиям вернёмся в лекции о памяти.
+
+\subsection{std::map: ключ и значение}
+
+\begin{cppcode}
+#include <map>
+#include <string>
+
+std::map<std::string, int> frequency;
+
+frequency["cat"] += 1;
+frequency["dog"] += 1;
+frequency["cat"] += 1;
+
+std::cout << frequency["cat"] << '\n'; // 2
+\end{cppcode}
+
+\texttt{std::map<std::string, int>} читаем как соответствие
+«ключ типа string $\rightarrow$ значение типа int».
+
+\begin{whybox}[Почему новый счётчик начинается с нуля]
+\texttt{map::operator[]} при отсутствии ключа создаёт для него значение.
+Для \texttt{int} значение по умолчанию равно нулю, после чего
+\texttt{+= 1} увеличивает счётчик.
+\end{whybox}
+
+\subsection{Не смешиваем язык, библиотеку и инструменты}
+
+Уже сейчас существуют три разных уровня:
+
+\textbf{Язык C++:} типы, выражения, функции, синтаксис и правила преобразований; \textbf{Стандартная библиотека:} \texttt{iostream}, \texttt{string}, \texttt{vector}, \texttt{map}; \textbf{Toolchain:} \texttt{g++}, assembler, linker, CMake, shell.
+
+\texttt{vector} не ключевое слово языка.
+Флаг \texttt{-Wall} не входит в стандарт C++.
+CMake --- не компилятор.
+
+\subsection{CMake как первая абстракция над сборкой}
+
+Для одного файла удобно написать команду \texttt{g++}. Когда исходников и
+настроек становится больше, выгоднее описать цель сборки.
+
+\begin{cmakecode}
+cmake_minimum_required(VERSION 3.16)
+
+project(basic_abstractions LANGUAGES CXX)
+
+add_executable(basic_abstractions main.cpp)
+
+target_compile_features(basic_abstractions PRIVATE cxx_std_17)
+\end{cmakecode}
+
+\texttt{add\_executable} создаёт build target, а
+\texttt{target\_compile\_features} задаёт требование конкретно для него.
+
+Сборка:
+
+\begin{shellcode}
+cmake -S . -B build
+cmake --build build
+./build/basic_abstractions
+\end{shellcode}
+
+\texttt{-S .} задаёт каталог исходников, \texttt{-B build} --- отдельный
+каталог генерируемых файлов.
+
+\begin{practicebox}[Эксперимент 2: простые абстракции]
+Программа в
+\texttt{examples/01\_intro\_and\_first\_program/02\_basic\_abstractions}
+использует \texttt{string}, \texttt{vector} и \texttt{map}, но специально
+обходится без циклов, собственных функций, указателей и классов.
+Так мы начинаем с небольшого числа уже понятных абстракций.
+\end{practicebox}
+
+\subsection{Что пока остаётся за кадром}
+
+Мы ещё не разобрали declaration и definition, scope, условия и циклы,
+категории ошибок, память и lifetime, устройство \texttt{vector},
+шаблоны, классы и стоимость операций контейнеров.
+
+Это не пробел, а карта следующих лекций.
+
+\subsection{Проверка понимания}
+
+После лекции нужно суметь без подсказки объяснить:
+
+1) чем исходный файл отличается от executable; 2) зачем нужны compiler и linker; 3) что делает \texttt{\#include}; 4) почему пишется \texttt{std::cout}; 5) почему \texttt{7 / 2} не равно \texttt{3.5}; 6) что означает \texttt{std::vector<int>}; 7) что означает \texttt{std::map<std::string, int>}; 8) почему новый \texttt{map}-счётчик можно увеличить через \texttt{+= 1}; 9) чем CMake отличается от компилятора.
+
+\subsection{Источники для сверки}
+
+Для терминов языка и фаз трансляции используем рабочий draft C++17 N4659.
+Практический GCC pipeline сверяем с \textit{An Introduction to GCC}.
+Первое педагогическое объяснение compilation pipeline сопоставляем с MIT
+6.096 Lecture 1. Target-based сборку сверяем с \textit{Modern CMake}.

@@ -1,0 +1,472 @@
+% Lecture 04: Функции, ссылки и const
+
+\section{Лекция 4. Функции, ссылки и const}
+\label{sec:lecture-04}
+
+В первых программах вся последовательность действий помещалась в
+\texttt{main}. В утилите инвентаризации уже появились разбор аргументов,
+проверка файлов, подсчёты и печать таблицы. Они работают, но спрятаны в одном
+длинном блоке. Следующее изменение заставляет заново искать границы каждой
+задачи и повышает риск случайно сломать соседнюю.
+
+\begin{importantbox}[Главный вопрос]
+Как превратить последовательность команд в набор именованных операций с
+ясными контрактами: что операция получает, что изменяет и что возвращает?
+\end{importantbox}
+
+\subsection{Функция как единица проектирования}
+
+Функция --- именованная операция. Она позволяет заменить повторённый алгоритм
+одним вызовом, дать намерению имя и отделить интерфейс от реализации.
+
+\begin{cppcode}
+int square(int value) {
+    return value * value;
+}
+
+const int area = square(6);
+\end{cppcode}
+
+Читающий \texttt{square(6)} сначала видит задачу, а детали умножения может
+изучить отдельно. Исправление алгоритма делается в одном месте. Так функции
+поддерживают читаемость, повторное использование, тестирование и декомпозицию.
+
+Но механически выносить каждую строку не цель. Хорошая функция выполняет одну
+понятную задачу, имеет ясные входы и выходы, разумное имя и уровень абстракции.
+\texttt{doStuff()} скрывает смысл; цепочка функций по одной очевидной строке
+заставляет читателя прыгать по файлу. Граница полезна, когда часть программы
+можно назвать и понять как самостоятельную операцию.
+
+\begin{definition}
+\textbf{Интерфейс функции} на этом уровне --- имя, тип возвращаемого значения
+и типы параметров. \textbf{Реализация} --- тело, которое выполняет обещанную
+операцию.
+\end{definition}
+
+\subsection{Определение, параметры и вызов}
+
+\begin{cppcode}
+int power(int base, int exponent) {
+    int result{1};
+    for (int i = 0; i < exponent; ++i) {
+        result *= base;
+    }
+    return result;
+}
+
+const int answer = power(3, 4);
+\end{cppcode}
+
+Разберём запись:
+\textbf{\texttt{int}:} return type: вызов вычисляет значение этого типа; \textbf{\texttt{power}:} function name; \textbf{\texttt{(int base, int exponent)}:} parameter list; \textbf{фигурные скобки:} body --- выполняемые действия; \textbf{\texttt{return result;}:} завершает вызов и передаёт значение caller; \textbf{\texttt{power(3, 4)}:} call; \texttt{3} и \texttt{4} --- arguments.
+
+Параметр --- локальное имя внутри definition, argument --- выражение в месте
+call. Порядок важен: \texttt{power(3, 4)} и \texttt{power(4, 3)} связывают
+разные значения с \texttt{base} и \texttt{exponent}. Компилятор проверяет
+число аргументов, допустимые conversions и тип результата.
+
+Runtime управление переходит в тело функции, затем возвращается в точку после
+call. Каждый вызов получает собственные параметры и локальные объекты. Это
+семантика языка. Отдельный stack frame и call stack --- полезная обычная
+модель реализации, но стандарт не требует конкретного CPU stack или ABI.
+
+Функция без значения результата имеет return type \texttt{void}:
+
+\begin{cppcode}
+void print_score(int score) {
+    std::cout << "score=" << score << '\n';
+}
+\end{cppcode}
+
+В \texttt{void}-функции допустим \texttt{return;} без expression. В функции с
+результатом значение должно быть возвращено на каждом достигнутом пути
+(кроме специальных правил для \texttt{main}). Код после безусловного
+\texttt{return} недостижим.
+
+\subsection{Declaration, prototype, definition и call}
+
+Чтобы проверить call, compiler должен раньше увидеть declaration:
+
+\begin{cppcode}
+int power(int base, int exponent); // declaration, или prototype
+
+int main() {
+    return power(2, 5);             // call
+}
+
+int power(int base, int exponent) { // definition
+    int result{1};
+    for (int i = 0; i < exponent; ++i) {
+        result *= base;
+    }
+    return result;
+}
+\end{cppcode}
+
+Declaration сообщает имя и function type; завершающий semicolon означает,
+что тела здесь нет. Definition --- тоже declaration, но дополнительно
+задаёт body. Call не объявляет функцию. Имена параметров в prototype можно
+опустить, но содержательные имена документируют роли.
+
+В блоке~1 translation units компилировались независимо. Обычно общие
+declarations помещают в header, а definition --- в \texttt{.cpp}, чтобы
+каждая единица трансляции могла проверить вызов. Полные правила headers, ODR и
+linkage будут развиваться позже; фундамент таков: compiler проверяет видимый
+declaration, linker затем должен найти подходящее definition.
+
+В строгой терминологии signature не всегда включает всё, что новичок называет
+«заголовком функции». Здесь безопаснее говорить явно: function name,
+parameter types и return type; перегрузка различается списком параметров, но
+не одним return type.
+
+\subsection{Return value как часть контракта}
+
+Функция-вычисление естественно возвращает результат:
+
+\begin{cppcode}
+int absolute(int value) {
+    if (value >= 0) {
+        return value; // ранний выход упрощает основной путь
+    }
+    return -value;
+}
+\end{cppcode}
+
+Ранний return полезен для простого guard condition; слишком много выходов
+может, наоборот, затруднить обзор. Контракт должен объяснять смысл результата,
+включая special values. \texttt{return} возвращает вычисленное значение,
+поэтому обычный return-by-value безопасен после уничтожения local.
+
+\begin{ubbox}[Dangling return]
+Нельзя вернуть pointer или reference на обычный local object и затем получить
+через него доступ: при выходе lifetime local заканчивается. Адресное значение
+может сохраниться, но живого объекта по нему уже нет.
+\end{ubbox}
+
+\begin{cppcode}
+int* bad_address() {
+    int local{42};
+    return &local; // после return pointer dangling
+}
+\end{cppcode}
+
+Это мост к модели lifetime блока~3. \texttt{const} не продлевает жизнь такого
+объекта. Sanitizer способен обнаружить некоторые выполненные случаи, но не
+обязан диагностировать каждую ошибку lifetime.
+
+\subsection{Pass-by-value: отдельный parameter object}
+
+\begin{cppcode}
+void change_copy(int value) {
+    value = 99;
+}
+
+int original{10};
+change_copy(original);
+// original всё ещё 10
+\end{cppcode}
+
+При pass-by-value параметр --- отдельный локальный объект, инициализированный
+из argument. Изменение \texttt{value} не меняет \texttt{original}. Копирование
+здесь не случайная цена, а полезная семантика: функция получает собственное
+значение.
+
+Для маленьких scalar types вроде \texttt{int}, \texttt{bool} и pointer это
+обычно самый ясный выбор. Передача большого \texttt{std::string} или
+\texttt{std::vector} по value может копировать элементы и выделять storage.
+Точная стоимость зависит от типа и реализации. Иногда копия нужна функции по
+смыслу, поэтому правило «reference всегда быстрее» неверно.
+
+\subsection{Reference: alias существующего объекта}
+
+\begin{cppcode}
+int score{10};
+int& alias{score};
+alias = 11; // меняется score
+\end{cppcode}
+
+\texttt{T\&} --- reference to \texttt{T}; она --- alias уже
+существующего объекта. Reference должна быть привязана при инициализации и
+обычно не моделирует optional/null состояние. После привязки assignment через
+неё изменяет объект, а не «перенаправляет» reference.
+
+\begin{cppcode}
+void add_point(int& score) {
+    ++score;
+}
+
+int result{10};
+add_point(result); // result становится 11
+\end{cppcode}
+
+Mutable reference parameter выражает контракт «функция может изменить этот
+argument». В месте call нет знака \texttt{\&}, поэтому значимую мутацию важно
+подчеркнуть именем: \texttt{add\_point}, \texttt{read\_arguments}.
+
+Reference связана с моделью адреса из блока~3, и реализация часто передаёт её
+подобно pointer. Но стандарт задаёт aliasing semantics, а не требует
+«скрытый pointer» определённого размера или layout. Pointer уместен, когда
+нужно выразить \texttt{nullptr} или менять выбранный адрес; reference --- когда
+объект обязателен и alias соответствует контракту. Обе конструкции требуют,
+чтобы referent оставался жив.
+
+\subsection{Const reference: read-only interface}
+
+\begin{cppcode}
+std::size_t total_characters(
+    const std::vector<std::string>& words) {
+    std::size_t result{};
+    for (const std::string& word : words) {
+        result += word.size();
+    }
+    return result;
+}
+\end{cppcode}
+
+\texttt{const T\&} связывается с существующим объектом без копирования всего
+\texttt{T} и запрещает функции изменять его \emph{через эту reference}.
+Поэтому это естественный read-only interface для больших
+\texttt{std::string}/\texttt{std::vector}. Компилятор отвергнет изменение
+элемента или \texttt{push\_back} через \texttt{words}.
+
+Обещание локально: исходный объект не становится вечным или глобально
+immutable; другой non-const alias может его менять. Reference не владеет
+объектом и не решает lifetime. Const reference может связываться с temporary и
+в некоторых строго определённых контекстах продлевать его lifetime, но это не
+универсальный механизм ownership; value categories появятся позже.
+
+\subsection{Четыре роли const в этом блоке}
+
+\begin{cppcode}
+const int limit{15};                   // local нельзя изменить
+void inspect(int value);               // call interface по value
+void inspect_const(const int value);   // тот же тип для caller
+void read(const std::string& text);     // read-only alias
+const int* view{&limit};                // read-only pointed-to int
+\end{cppcode}
+
+Top-level \texttt{const} у value parameter ограничивает только local copy в
+definition и не создаёт другую overload. Поэтому его часто опускают в
+declaration; в definition можно добавить для защиты реализации. У
+\texttt{const T\&} const относится к referent и существенен для call
+interface. У \texttt{const int*} нельзя менять pointed-to value через pointer,
+но сам pointer можно перенаправить.
+
+\texttt{const} выражает намерение и даёт compiler возможность запретить часть
+мутаций. Он не гарантирует thread safety, владение, lifetime или вечность.
+
+\subsection{Return value или output reference?}
+
+\begin{cppcode}
+int square(int value) {
+    return value * value;
+}
+
+void square_out(int value, int& output) {
+    output = value * value;
+}
+\end{cppcode}
+
+Первая форма читается как expression, и результат нельзя забыть
+инициализировать внутри функции. Для одного вычисленного результата обычно
+предпочтителен return value. Mutable output reference разумна, если главная
+цель операции действительно изменить существующий объект. Большое число
+output references скрывает направление данных, требует заранее создать
+variables и усложняет проверку всех изменений. Более сложные способы возврата
+нескольких значений пока не нужны.
+
+\subsection{Overloading и default arguments}
+
+\begin{cppcode}
+int twice(int value)       { return value * 2; }
+double twice(double value) { return value * 2.0; }
+
+const int a = twice(4);
+const double b = twice(2.5);
+\end{cppcode}
+
+Overload set содержит функции с одним именем и разными parameter lists.
+Compiler выбирает viable candidate и сравнивает требуемые conversions. Если
+единственного лучшего кандидата нет, call ambiguous и программа ill-formed.
+
+\begin{cppcode}
+void show(int);
+void show(double);
+// show(1L); // ambiguous: две conversions одного ранга
+\end{cppcode}
+
+Return type сам по себе не различает overload: compiler должен выбрать
+функцию до использования результата. Перегрузки полезны для одной операции
+над близкими типами; одинаковое имя для несвязанных действий скрывает смысл.
+
+Default argument подставляется в месте call:
+
+\begin{cppcode}
+void print_line(const std::string& text, int repetitions = 1);
+print_line("ready"); // как print_line("ready", 1)
+\end{cppcode}
+
+После первого параметра с default все последующие в этом parameter list тоже
+должны иметь default. Его обычно указывают в declaration один раз. Это не
+новая функция и не runtime-решение; defaults не должны скрывать важные inputs.
+
+\subsection{Первый function pointer}
+
+В блоке~3 pointer мог хранить адрес объекта. Адрес функции тоже можно хранить
+и затем вызвать:
+
+\begin{cppcode}
+int add(int left, int right) { return left + right; }
+int subtract(int left, int right) { return left - right; }
+
+int (*operation)(int, int) = add;
+const int first = operation(9, 4); // 13
+operation = subtract;
+const int second = operation(9, 4); // 5
+\end{cppcode}
+
+Тип читается из имени наружу: \texttt{operation} --- pointer на функцию с
+двумя \texttt{int} parameters, возвращающую \texttt{int}. Скобки вокруг
+\texttt{*operation} существенны. Это простейший callback-like interface:
+
+\begin{cppcode}
+int apply(int left, int right, int (*operation)(int, int)) {
+    return operation(left, right);
+}
+\end{cppcode}
+
+Pointer может быть null, поэтому общий interface должен определить это
+контрактом или проверить. Синтаксис быстро становится трудным; более удобные
+abstractions будут позже вместе с lambdas и \texttt{std::function}. Сейчас
+важна идея: поведение тоже можно выбрать через типизированный адрес.
+
+\subsection{Scope, lifetime и повторные вызовы}
+
+Parameter names и locals доступны только в своих scopes. Их automatic
+storage duration обычно означает: lifetime начинается при выполнении
+declaration во время конкретного call и заканчивается при выходе из блока.
+Следующий call создаёт новые parameter/local objects.
+
+\begin{cppcode}
+int local_scope_case() {
+    const int local{17};
+    return local;
+}
+
+const int copy = local_scope_case(); // copy жив, local уже нет
+// std::cout << local;                // имя вне scope: error
+\end{cppcode}
+
+Scope --- область текста, где доступно имя; lifetime --- интервал выполнения,
+когда существует объект. Они связаны, но не тождественны. Reference может
+покинуть scope исходного имени, но не продлевает lifetime автоматически.
+Recursion использует те же правила: каждый call получает свои locals. Её
+алгоритмические применения оставим отдельным задачам.
+
+\subsection{Модель стоимости без магии}
+
+Обычный function call может требовать передачи arguments, сохранения точки
+возврата и переходов. Оптимизатор может встроить тело (inlining), удалить call
+или преобразовать код иначе, если observable behavior сохраняется.
+
+\begin{implementationbox}[Inlining]
+Машинное решение зависит от compiler, flags, visibility и target. Keyword
+\texttt{inline} не обещает вставку машинного кода; его языковая роль связана
+прежде всего с правилами нескольких definitions. И маленькая функция без
+keyword может быть встроена, а \texttt{inline}-функция --- нет.
+\end{implementationbox}
+
+Копирование большого vector/string по value может копировать элементы и
+делать allocation. Const reference часто избегает этой работы, но добавляет
+aliasing и зависимость от lifetime, а для маленького \texttt{int} обычно лишь
+усложняет interface. Оптимизация способна убрать некоторые копии; утверждение
+о времени требует конкретных flags, данных и измерения. Поэтому лаборатория
+проверяет семантику, а BENCHMARKS для блока N/A.
+
+\subsection{Эксперимент 1: рефакторинг course\_inventory}
+
+Исходная утилита блока~3 фиксирует поведение: принимает
+\texttt{--root}/\texttt{--block}, инспектирует те же 15 пар, печатает ту же
+таблицу и возвращает те же классы exit codes. Новая версия лежит в
+\texttt{examples/04\_functions\_references\_and\_const/
+01\_course\_inventory\_refactored} и не меняет блок~3.
+
+Декомпозиция проведена по задачам: \texttt{read\_arguments} формирует входное
+состояние, \texttt{count\_lines} и \texttt{count\_example\_files} измеряют
+один ресурс, \texttt{inspect\_block} возвращает одну строку,
+\texttt{collect\_rows} строит vector, \texttt{print\_report} агрегирует и
+печатает. \texttt{main} теперь выражает верхнеуровневый сценарий.
+
+\texttt{argc}, indexes и selected передаются по value как маленькие значения.
+Path, string, массив имён и vector строк отчёта читаются по const reference.
+Mutable references \texttt{root}/\texttt{selected} оправданы в parser: его
+задача --- заполнить существующее состояние. \texttt{BlockInfo} и vector
+естественно возвращаются как values.
+
+\begin{shellcode}
+cd examples/04_functions_references_and_const/01_course_inventory_refactored
+cmake -S . -B build
+cmake --build build
+./build/course_inventory_refactored --root ../../.. --block 3
+ctest --test-dir build --output-on-failure
+\end{shellcode}
+
+Функциональная эквивалентность проверяется одинаковыми arguments и diff после
+нормализации только process-specific addresses. PASS --- одинаковый
+нормализованный stdout, одинаковые ключевые exit codes и два CTest PASS.
+
+\subsection{Эксперимент 2: function\_contract\_lab}
+
+Каталог \texttt{02\_function\_contract\_lab} содержит один safe executable.
+Он проверяет неизменность argument после pass-by-value, изменение через
+mutable reference, чтение vector через const reference, return value против
+output reference, local lifetime, overloads и выбор add/subtract через
+function pointer.
+
+\begin{shellcode}
+cd examples/04_functions_references_and_const/02_function_contract_lab
+cmake -S . -B build
+cmake --build build
+./build/function_contract_lab
+ctest --test-dir build --output-on-failure
+\end{shellcode}
+
+CTest отдельно запускает compiler для трёх ill-formed programs. В
+\texttt{const\_mutation.cpp} операция \texttt{+=} требует изменить const
+\texttt{std::string}; compiler запрещает это через read-only reference.
+Другие cases доказывают, что return type не образует overload и что call может
+быть ambiguous. Test считается PASS именно при ненулевом compiler exit code;
+реальная diagnostic сохраняется в build.
+
+Unsafe \texttt{dangling\_return} opt-in собирается с ASan/UBSan. PASS требует
+ненулевого exit и фактической sanitizer diagnostic на этой toolchain, а не
+заранее придуманного текста. Safe executable должен закончить строкой
+\texttt{FUNCTION\_CONTRACT\_LAB=PASS} и code 0.
+
+\subsection{Сильные стороны и цена}
+
+Строго типизированные функции дают прозрачную декомпозицию и compile-time
+interface. Value/reference/const-reference позволяют явно выбирать копию,
+мутацию существующего объекта или read-only alias. Programmer контролирует
+форму и потенциальную стоимость передачи данных.
+
+Цена контроля: неверный выбор вызывает лишнюю копию либо неожиданную
+мутацию; dangling references/pointers остаются возможны; function pointer
+имеет тяжёлый синтаксис; const не решает ownership/lifetime. Compiler проверит
+типы, но не определит, хорошо ли программа разделена архитектурно.
+
+\subsection{Проверка понимания}
+
+Нужно уметь:
+1) объяснить, когда именованная операция улучшает большой \texttt{main}; 2) различить declaration, definition и call, parameter и argument; 3) описать передачу управления и lifetime locals без требования stack frame; 4) выбрать value, mutable reference или const reference по контракту; 5) объяснить, почему const не означает ownership или вечный объект; 6) предпочесть return value простому output parameter; 7) объяснить overload resolution и два negative cases; 8) прочитать базовый тип function pointer; 9) объяснить dangling return и границы sanitizer; 10) отделить возможный call/copy cost от голословного «быстрее».
+
+\subsection{Источники для сверки}
+
+Function declarations/definitions, calls, return, references,
+cv-qualification, overloading и function pointers сверены с C++17 working
+draft N4659. Порядок объяснения и исходная задача reuse сопоставлены с MIT
+6.096 Lecture~3; references --- с Lecture~5 и релевантными частями Advanced
+Topics~II. Их утверждение «reference is just a pointer internally» сознательно
+не принято как гарантия стандарта. Современный выбор value/const reference и
+C++17 style сопоставлены с \textit{Modern C++ Tutorial}; сборка использует
+target-based CMake.
